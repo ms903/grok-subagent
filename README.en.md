@@ -149,13 +149,15 @@ Important boundaries:
 
 Read [SECURITY.md](SECURITY.md) before using the plugin on private code.
 
-## Nine management tools
+## Management tools
 
 | Tool | Purpose | Filesystem mode |
 | --- | --- | --- |
 | `grok_spawn_readonly` | Start an independent investigation, review, or plan analysis | Grok `read-only` sandbox |
 | `grok_spawn_worker` | Implement inside an approved linked worktree | Grok `workspace` sandbox + bridge guard |
 | `grok_handoff_interactive` | Open an interactive Grok TUI in a new macOS Terminal window and stop Codex supervision after prompt handoff | Read-only or a Grok-created isolated worktree |
+| `grok_search` | Run Grok-native X/Web research outside the current repository | Private research directory |
+| `grok_search_list` / `grok_search_show` | List or read retained search answers | Read-only |
 | `grok_status` | Read lifecycle, elapsed time, plan, recent tool activity, and a public-response preview; optionally wait for a newer revision | Read-only |
 | `grok_result` | Read the public answer, optionally waiting briefly | Read-only |
 | `grok_send` | Send a focused follow-up; writing sessions require renewed scope confirmation | Inherits session mode |
@@ -183,7 +185,7 @@ While Grok is running, the skill asks Codex to use `grok_status` for incremental
 - the official Grok Build CLI, authenticated locally;
 - Git when using writing workers.
 
-Last verified environment (2026-07-17): macOS, Grok CLI `0.2.101`, `grok-4.5`, and a browser-authenticated SuperGrok account. The plugin also follows other authentication methods supported by the official CLI, including `XAI_API_KEY`, without implementing authentication itself.
+Last verified environment (2026-08-03): macOS, Grok CLI `0.2.114`, plugin `0.4.0`, `grok-4.5`, and a browser-authenticated SuperGrok account. Isolated `grok_search` was live-verified the same day. The plugin also follows other authentication methods supported by the official CLI, including `XAI_API_KEY`, without implementing authentication itself.
 
 Official references: [Grok Build overview](https://docs.x.ai/build/overview), [Headless & ACP](https://docs.x.ai/build/cli/headless-scripting), and [CLI reference](https://docs.x.ai/build/cli/reference).
 

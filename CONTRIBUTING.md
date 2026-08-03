@@ -25,6 +25,8 @@ Never commit authentication files, captured tokens, private prompts, or test rep
 - Explain the behavior and trust-boundary impact.
 - Add or update tests for protocol and lifecycle changes.
 - Update both `README.md` (Chinese) and `README.en.md` (English) when user-facing behavior changes.
+- Keep `AGENTS.md` current for agent handoff: how to run, trust boundaries, and the active tool surface.
+- Search-mode changes must preserve repository-free isolation and the third-party notice for the adapted bridge.
 - Run `npm test` before opening the pull request.
 - Do not weaken the linked-worktree requirement without a documented replacement providing at least equivalent isolation.
 

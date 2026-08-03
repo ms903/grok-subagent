@@ -184,7 +184,7 @@ Grok 运行期间，Skill 会让 Codex 用 `grok_status` 做最长 30 秒的增�
 - 已安装并登录官方 Grok Build CLI；
 - 写入模式需要 Git。
 
-最近验证环境（2026-07-17）：macOS、Grok CLI `0.2.101`、`grok-4.5`，以及通过浏览器登录的 SuperGrok 账号。插件也沿用官方 CLI 支持的其他认证方式，例如 `XAI_API_KEY`，但不会自行处理认证流程。
+最近验证环境（2026-08-03）：macOS、Grok CLI `0.2.114`、插件 `0.4.0`、`grok-4.5`，以及通过浏览器登录的 SuperGrok 账号。同日已 live 验证隔离式 `grok_search`。插件也沿用官方 CLI 支持的其他认证方式，例如 `XAI_API_KEY`，但不会自行处理认证流程。
 
 官方参考：[Grok Build](https://docs.x.ai/build/overview)、[ACP 与无头模式](https://docs.x.ai/build/cli/headless-scripting)、[CLI 参数](https://docs.x.ai/build/cli/reference)。
 
