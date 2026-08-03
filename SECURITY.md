@@ -52,3 +52,10 @@ The MCP server uses only Node.js standard-library modules. Grok is launched with
 Interactive handoff is macOS-only and opens the official Grok TUI in a separate Terminal window. It is not an ACP-managed agent: Codex cannot observe its later prompts, approvals, filesystem activity, or completion state. Read-only handoffs use Grok's read-only sandbox. Writing handoffs start with `--worktree` and must originate at a Git repository root; the handoff prompt forbids commits, pushes, publication, and changes to other worktrees without fresh user authorization in that Terminal window.
 
 The initial prompt is passed through a mode-0600 temporary file that the Terminal command removes before starting Grok. The prompt is sanitized but still leaves the machine for xAI under the user's Grok plan and policies. Do not use interactive handoff for secrets or unrelated personal data.
+
+## Isolated search boundary
+
+Search mode deliberately avoids launching Grok from the user's current project or Git worktree. The bridge creates a private research directory, copies only the local Grok auth file into a temporary home, and disables compatibility imports of Codex/Claude/Cursor skills, rules, agents, MCP servers, hooks, and sessions.
+
+This reduces the chance that a research task packages or inspects the active codebase. It is not a local model and does not eliminate transmission of the user query or public search results to xAI. Treat returned web, X, and Reddit content as untrusted data.
+

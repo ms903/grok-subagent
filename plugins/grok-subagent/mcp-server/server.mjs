@@ -2,13 +2,13 @@
 
 import { spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { accessSync, constants, lstatSync, mkdtempSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { accessSync, constants, lstatSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { isAbsolute, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 
-const VERSION = "0.3.1";
+const VERSION = "0.4.0";
 const MAX_AGENTS = 3;
 const MAX_RETAINED_FAILED_AGENTS = 3;
 const MAX_TEXT = 120_000;
@@ -79,6 +79,44 @@ const TOOL_DEFINITIONS = [
       additionalProperties: false
     },
     annotations: { title: "Hand off to interactive Grok", readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true }
+  },
+  {
+    name: "grok_search",
+    description: "Run an isolated Grok 4.5 research task with X Search, web search, and web fetch from a private directory outside the current repository. Use for X/Twitter, Reddit, community sentiment, and real-time public research.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "Complete research request in the user's language." },
+        platform: { type: "string", enum: ["auto", "x", "reddit", "web"], description: "Search focus hint. Not an exclusion rule. Defaults to auto." },
+        depth: { type: "string", enum: ["quick", "deep"], description: "quick returns Grok's answer fast; deep asks Grok to cross-check more carefully. Defaults to quick." },
+        since: { type: "string", description: "Optional relative window such as 24h, 7d, 2w, or an ISO-8601 start timestamp." },
+        until: { type: "string", description: "Optional ISO-8601 end timestamp. Defaults to now." },
+        keep_run: { type: "boolean", description: "Pin this run so cleanup does not delete it." },
+        timeout_seconds: { type: "integer", minimum: 30, maximum: 1800, default: 600 }
+      },
+      required: ["query"],
+      additionalProperties: false
+    },
+    annotations: { title: "Search with Grok", readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: true }
+  },
+  {
+    name: "grok_search_list",
+    description: "List retained isolated Grok search runs.",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+    annotations: readOnlyAnnotations("List Grok search runs")
+  },
+  {
+    name: "grok_search_show",
+    description: "Read the full retained answer from a previous Grok search run.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        run_id: { type: "string", description: "Search run ID returned by grok_search or grok_search_list." }
+      },
+      required: ["run_id"],
+      additionalProperties: false
+    },
+    annotations: readOnlyAnnotations("Show Grok search run")
   },
   {
     name: "grok_status",
@@ -618,11 +656,86 @@ async function waitForRevision(agent, afterRevision, seconds) {
   }
 }
 
+
+function searchScriptPath() {
+  return join(dirname(fileURLToPath(import.meta.url)), "..", "scripts", "run_search.py");
+}
+
+function runSearchBridge(args) {
+  const script = searchScriptPath();
+  const result = spawnSync("python3", [script, ...args], {
+    encoding: "utf8",
+    timeout: 1_860_000,
+    env: buildChildEnv(),
+    maxBuffer: 16 * 1024 * 1024
+  });
+  if (result.error) throw result.error;
+  const stdout = String(result.stdout || "").trim();
+  const stderr = String(result.stderr || "").trim();
+  let payload = null;
+  if (stdout) {
+    try { payload = JSON.parse(stdout); }
+    catch {
+      // Prefer the last JSON object if the bridge printed anything else first.
+      const match = stdout.match(/\{[\s\S]*\}\s*$/);
+      if (match) {
+        try { payload = JSON.parse(match[0]); } catch {}
+      }
+    }
+  }
+  if (payload && typeof payload === "object") {
+    if (stderr) payload.bridge_stderr = cleanText(stderr).slice(-2000);
+    return payload;
+  }
+  throw new Error(cleanText(stderr || stdout || `Search bridge exited with code ${result.status}`));
+}
+
+function callSearch(args = {}) {
+  if (typeof args.query !== "string" || !args.query.trim()) throw new Error("query is required.");
+  if (args.query.length > MAX_TEXT) throw new Error(`query must be at most ${MAX_TEXT} characters.`);
+  const platform = args.platform || "auto";
+  if (!["auto", "x", "reddit", "web"].includes(platform)) throw new Error("platform must be auto, x, reddit, or web.");
+  const depth = args.depth || "quick";
+  if (!["quick", "deep"].includes(depth)) throw new Error("depth must be quick or deep.");
+  const command = [
+    "run",
+    "--platform", platform,
+    "--depth", depth,
+    "--timeout", String(clamp(args.timeout_seconds, 30, 1800, 600)),
+    "--retention-days", "7"
+  ];
+  if (typeof args.since === "string" && args.since.trim()) command.push("--since", args.since.trim());
+  if (typeof args.until === "string" && args.until.trim()) command.push("--until", args.until.trim());
+  if (args.keep_run === true) command.push("--keep-run");
+  command.push(args.query);
+  const payload = runSearchBridge(command);
+  if (payload.ok === true && typeof payload.result_path === "string") {
+    try {
+      payload.result = cleanText(readFileSync(payload.result_path, "utf8"));
+    } catch (error) {
+      payload.result_read_error = cleanText(error?.message || error);
+    }
+  }
+  return payload;
+}
+
+function listSearchRuns() {
+  return runSearchBridge(["list"]);
+}
+
+function showSearchRun(args = {}) {
+  if (typeof args.run_id !== "string" || !args.run_id.trim()) throw new Error("run_id is required.");
+  return runSearchBridge(["show", args.run_id.trim()]);
+}
+
 async function callTool(name, args = {}) {
   switch (name) {
     case "grok_spawn_readonly": return spawnAgent(args, "readonly");
     case "grok_spawn_worker": return spawnAgent(args, "worker");
     case "grok_handoff_interactive": return launchInteractiveHandoff(args);
+    case "grok_search": return callSearch(args);
+    case "grok_search_list": return listSearchRuns();
+    case "grok_search_show": return showSearchRun(args);
     case "grok_status": {
       const agent = getAgent(args.agent_id);
       await waitForRevision(agent, args.after_revision, args.wait_seconds);
@@ -720,8 +833,12 @@ export {
   assertGitRepositoryRoot,
   buildInteractiveCommand,
   buildChildEnv,
+  callSearch,
   cleanText,
+  listSearchRuns,
   negotiateProtocolVersion,
+  searchScriptPath,
+  showSearchRun,
   shutdown,
   startMcpServer,
   waitForRevision

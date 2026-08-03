@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented here.
 
+## 0.4.0 - 2026-08-03
+
+### Added
+
+- Added isolated `grok_search`, `grok_search_list`, and `grok_search_show` tools for Grok-native X, Reddit, and public-web research outside the current repository.
+- Bundled a repository-free Grok search bridge adapted from the MIT-licensed `sudoHG/codex-grok-search` project.
+- Extended the orchestration skill so current X/Twitter and Reddit research prefers `grok_search` before ordinary web search or project-scoped Grok agents.
+
+### Security
+
+- Search runs use a private cache under `~/.cache/grok-subagent/search-runs`, temporary HOME/GROK_HOME isolation, and only `x_search`, `web_search`, and `web_fetch`.
+- Search mode still sends queries and retrieved public content to xAI; it reduces local repository exposure rather than claiming zero upload.
+
 ## 0.3.0 - 2026-07-18
 
 ### Added

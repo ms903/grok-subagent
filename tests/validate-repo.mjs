@@ -25,5 +25,7 @@ assert.match(serverSource, new RegExp(`const VERSION = ["']${packageManifest.ver
 assert.equal(manifest.mcpServers, "./.mcp.json");
 assert(statSync(resolve(pluginRoot, "mcp-server/server.mjs")).isFile());
 assert(statSync(resolve(pluginRoot, "skills/grok-subagent/SKILL.md")).isFile());
+assert(statSync(resolve(pluginRoot, "scripts/run_search.py")).isFile());
+assert(statSync(resolve(root, "THIRD_PARTY_NOTICES.md")).isFile());
 
 console.log("Marketplace and plugin layout are valid.");

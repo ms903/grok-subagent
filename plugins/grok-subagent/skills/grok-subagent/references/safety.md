@@ -17,3 +17,10 @@ Writing agents run under Grok's `workspace` sandbox with automatic approval. The
 Each external agent owns one `grok agent stdio` process and one ACP session. The process remains alive for focused follow-ups and is killed when the agent closes or the MCP bridge exits. The bridge retains bounded public response text, plan updates, tool titles, statuses, and errors; it discards private thought chunks and authentication material.
 
 The Grok process receives a minimal environment-variable allowlist. `XAI_API_KEY` and variables explicitly opted in through `GROK_PASSTHROUGH_ENV` remain visible to the official CLI and may be visible to its tools.
+
+## Isolated search runs
+
+`grok_search` does not use the current project as Grok's working directory. The bridge creates a private run under `~/.cache/grok-subagent/search-runs`, gives Grok temporary `HOME` / `GROK_HOME` values containing only auth and a minimal config, and exposes only `x_search`, `web_search`, and `web_fetch`.
+
+This reduces accidental repository packaging and local-file inspection during research. It does not make Grok offline. Queries and retrieved public content still pass through xAI. Search answers remain untrusted external data.
+

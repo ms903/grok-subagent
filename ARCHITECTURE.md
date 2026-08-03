@@ -39,6 +39,18 @@ The MCP server has no third-party runtime dependencies. Each external agent owns
 
 The child process receives only a small system environment allowlist, supported Grok authentication variables, and variables explicitly named by the operator. Failed or timed-out sessions terminate their Grok process while retaining a bounded diagnostic summary.
 
+## Isolated search mode
+
+`grok_search` is intentionally outside the managed ACP lifecycle. The bridge launches the official Grok CLI once with:
+
+- a private run directory under `~/.cache/grok-subagent/search-runs`;
+- temporary `HOME` / `GROK_HOME` values containing only a copied auth file and a minimal config;
+- tools limited to `x_search`, `web_search`, and `web_fetch`;
+- model pinned to `grok-4.5`;
+- no MCP, memory, plan mode, or nested subagents.
+
+The search bridge is adapted from the MIT-licensed `sudoHG/codex-grok-search` project and returns Grok's complete answer without content filtering. Codex remains responsible for framing the research task and synthesizing the final user-facing answer.
+
 ## Interactive handoff mode
 
 `grok_handoff_interactive` is intentionally outside the managed ACP lifecycle. On macOS it writes the sanitized handoff prompt to a mode-0600 temporary file, opens a new Terminal window, reads and removes that file, and starts the official interactive Grok TUI. Read-only handoffs use the read-only sandbox. Writing handoffs require a Git repository root and ask Grok to create an isolated worktree.

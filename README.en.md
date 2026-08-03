@@ -6,6 +6,8 @@
 
 Let Codex call the official Grok Build CLI as a controlled external subagent while Codex remains responsible for orchestration, decisions, and final verification.
 
+This release also bridges isolated Grok-native X/Reddit/web search through `grok_search`.
+
 [简体中文](README.md) · [Architecture](ARCHITECTURE.md) · [Security](SECURITY.md) · [Contributing](CONTRIBUTING.md)
 
 > Community project. Not affiliated with, endorsed by, or sponsored by OpenAI or xAI. Grok and Grok Build are trademarks of xAI; Codex is a product of OpenAI.
@@ -86,6 +88,15 @@ The bridge is an orchestration adapter, not another full coding-agent framework.
 | **This plugin: official Grok CLI + ACP + MCP** | Keeps the supported Grok agent runtime and adds a narrow, auditable Codex control layer |
 
 This plugin does not replace native Codex subagents. Native subagents are a better fit for same-platform parallel decomposition. This plugin is useful when you specifically want **model diversity**: Grok provides an independent review or isolated implementation, and Codex remains the final verifier.
+
+### Real-time X / community search
+
+```text
+Use Grok to find the most discussed X posts about OpenCodex from the past 7 days,
+include direct links, and prefer high-engagement original posts over ordinary web mirrors.
+```
+
+`grok_search` starts Grok 4.5 outside the current repository with only `x_search`, `web_search`, and `web_fetch`, then returns Grok's complete answer to Codex.
 
 ## Common workflows
 
@@ -238,6 +249,10 @@ upgrade commands above.
 - The bridge does not merge, commit, push, or delete worktrees.
 - Grok is an external ACP worker exposed through MCP, not a native Codex team subagent.
 - Grok CLI behavior, model names, and sandbox implementation may change. Pin or centrally manage Grok versions in sensitive environments.
+
+## Acknowledgements
+
+The isolated search bridge is adapted from the MIT-licensed [`sudoHG/codex-grok-search`](https://github.com/sudoHG/codex-grok-search) project.
 
 ## License
 

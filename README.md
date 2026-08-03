@@ -14,7 +14,8 @@
 
 - **异构模型复核**：让 Grok 独立调查、审查代码或反驳方案，再由 Codex 核验结论；
 - **完整会话管理**：支持状态查看、持续追问、结果读取、取消和关闭，而不是一次性复制答案；
-- **默认安全隔离**：调查默认只读；写入必须经过明确授权，并且只能发生在独立 linked Git worktree 中。
+- **默认安全隔离**：调查默认只读；写入必须经过明确授权，并且只能发生在独立 linked Git worktree 中；
+- **Grok 原生搜索**：通过隔离目录调用 Grok 的 X Search / Web Search，适合查推文、Reddit 讨论和实时公开信息。
 
 ## 60 秒快速开始
 
@@ -55,6 +56,7 @@ codex plugin add grok-subagent@walvez-grok
 | 审查认证、支付、权限、并发等高风险代码 | 需要同时管理许多模型和可视化面板 |
 | 从反方角度检查迁移或实施方案 | 环境不允许把相关代码或上下文发送给 xAI |
 | 在隔离 worktree 中尝试第二份实现 | 要求 Agent 会话在 Codex/MCP 重启后自动恢复 |
+| 查 X/Twitter、Reddit 或社区热点 | 只想用 OpenCodex 的普通网页搜索 sidecar |
 
 ## 工作原理
 
@@ -87,6 +89,15 @@ flowchart LR
 本插件不是 Codex 原生子 Agent 的替代品。原生子 Agent 更适合同平台内的并行拆分；本插件适合需要**模型多样性**时，让 Grok 提供独立意见或隔离实现，再由 Codex 统一验收。
 
 ## 常用场景
+
+### 实时 X / 社区搜索
+
+```text
+用 Grok 搜索过去 7 天关于 OpenCodex 的热门 X 帖子，给出可点击链接，
+并说明哪些是高互动原帖。不要只做普通网页搜索。
+```
+
+`grok_search` 会在仓库外的私有目录中启动 Grok 4.5，只开放 `x_search`、`web_search` 和 `web_fetch`，并把完整答案交回 Codex。
 
 ### 独立排查故障
 
@@ -137,13 +148,15 @@ flowchart LR
 
 在私有代码上使用前，请阅读 [SECURITY.md](SECURITY.md)。
 
-## 九个管理工具
+## 管理工具
 
 | 工具 | 用途 | 文件系统模式 |
 | --- | --- | --- |
 | `grok_spawn_readonly` | 启动独立调查、审查或方案分析 | Grok `read-only` 沙箱 |
 | `grok_spawn_worker` | 在获批的 linked worktree 中执行实现任务 | Grok `workspace` 沙箱 + Bridge 检查 |
 | `grok_handoff_interactive` | 在新的 macOS Terminal 窗口打开可交互 Grok TUI，Codex 完成 prompt 移交后不再监督 | 只读或 Grok 创建的隔离 worktree |
+| `grok_search` | 在仓库外运行 Grok 原生 X/Web 搜索并返回完整答案 | 私有 research 目录，不进入当前仓库 |
+| `grok_search_list` / `grok_search_show` | 列出或读取保留的搜索结果 | 只读 |
 | `grok_status` | 查看生命周期、运行时长、计划、最近工具活动和公开回答片段；支持按进度版本等待增量 | 只读 |
 | `grok_result` | 获取公开回答，可短暂等待当前轮次完成 | 只读 |
 | `grok_send` | 在同一会话中聚焦追问；写入会话需重新确认范围 | 继承会话模式 |
@@ -236,6 +249,10 @@ codex plugin add grok-subagent@walvez-grok
 - 插件不会自动提交、合并、推送或删除 worktree；
 - Grok 是通过 ACP/MCP 接入的外部 Agent，不是 Codex 内部原生团队 Agent；
 - Grok CLI、模型名和沙箱行为未来可能改变，高安全环境应固定并集中管理 Grok 版本。
+
+## 致谢
+
+隔离搜索桥接改编自 MIT 许可的 [`sudoHG/codex-grok-search`](https://github.com/sudoHG/codex-grok-search)。
 
 ## 开源许可
 

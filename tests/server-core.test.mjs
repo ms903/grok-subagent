@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -14,6 +14,7 @@ import {
   buildChildEnv,
   cleanText,
   negotiateProtocolVersion,
+  searchScriptPath,
   waitForRevision
 } from "../plugins/grok-subagent/mcp-server/server.mjs";
 
@@ -201,3 +202,18 @@ test("failure terminates the child process without hiding the error", () => {
   agent.onExit(null, "SIGTERM");
   assert.equal(agent.error, originalError);
 });
+
+test("search tools are advertised and the bridge script is present", () => {
+  const byName = Object.fromEntries(TOOL_DEFINITIONS.map(tool => [tool.name, tool]));
+  assert(byName.grok_search);
+  assert(byName.grok_search_list);
+  assert(byName.grok_search_show);
+  assert.equal(byName.grok_search.annotations.openWorldHint, true);
+  assert.equal(byName.grok_search.inputSchema.required.includes("query"), true);
+  assert.deepEqual(byName.grok_search.inputSchema.properties.platform.enum, ["auto", "x", "reddit", "web"]);
+  assert.deepEqual(byName.grok_search.inputSchema.properties.depth.enum, ["quick", "deep"]);
+  const script = searchScriptPath();
+  assert.match(script, /run_search\.py$/);
+  assert(statSync(script).isFile());
+});
+
