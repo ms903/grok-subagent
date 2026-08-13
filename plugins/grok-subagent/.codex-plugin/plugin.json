@@ -1,10 +1,13 @@
 {
   "name": "grok-subagent",
-  "version": "0.4.0",
-  "description": "Run authenticated Grok Build agents and isolated Grok-native X/web search from Codex.",
+  "version": "0.5.0",
+  "description": "Run and control authenticated Grok Build agents and isolated Grok-native X/web search from Codex.",
   "author": {
-    "name": "Walvez"
+    "name": "ms903",
+    "url": "https://github.com/ms903"
   },
+  "homepage": "https://github.com/ms903/grok-subagent",
+  "repository": "https://github.com/ms903/grok-subagent",
   "license": "MIT",
   "keywords": [
     "grok",
@@ -18,9 +21,9 @@
   "skills": "./skills/",
   "interface": {
     "displayName": "Grok Subagent",
-    "shortDescription": "Delegate coding work and real-time Grok search.",
-    "longDescription": "Let Codex start, steer, inspect, cancel, and close authenticated Grok Build ACP sessions, and run isolated Grok-native X/Reddit/web research outside the current repository.",
-    "developerName": "Walvez",
+    "shortDescription": "Control Grok models, modes, plans, agents, and search.",
+    "longDescription": "Let Codex start, configure, steer, approve plans, inspect, cancel, and close authenticated Grok Build ACP sessions, and run isolated Grok-native X/Reddit/web research outside the current repository.",
+    "developerName": "ms903",
     "category": "Productivity",
     "capabilities": [
       "Interactive",
@@ -28,9 +31,9 @@
       "Write"
     ],
     "defaultPrompt": [
-      "Ask Grok to investigate this project independently.",
+      "Ask Grok 4.6 at high effort to review this project.",
       "Search recent X posts about this topic with Grok.",
-      "Run a Grok worker in an isolated worktree."
+      "Have Grok plan, then implement in an isolated worktree."
     ]
   },
   "mcpServers": "./.mcp.json"

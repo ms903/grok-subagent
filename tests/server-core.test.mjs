@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -10,12 +10,16 @@ import {
   TOOL_DEFINITIONS,
   appleScriptString,
   assertLinkedWorktree,
+  buildManagedAgentArgs,
   buildInteractiveCommand,
   buildChildEnv,
   cleanText,
   negotiateProtocolVersion,
+  normalizePluginConfig,
+  readPluginConfig,
   searchScriptPath,
-  waitForRevision
+  waitForRevision,
+  writePluginConfig
 } from "../plugins/grok-subagent/mcp-server/server.mjs";
 
 test("child environment excludes unrelated secrets and supports explicit passthrough", () => {
@@ -35,6 +39,45 @@ test("child environment excludes unrelated secrets and supports explicit passthr
     CUSTOM_CA_MODE: "strict"
   });
   assert.equal(env.AWS_SECRET_ACCESS_KEY, undefined);
+});
+
+test("managed Grok arguments expose model, effort, profile, sandbox, and subagent policy", () => {
+  assert.deepEqual(buildManagedAgentArgs({
+    sandbox: "read-only",
+    model: "grok-4.6",
+    reasoningEffort: "xhigh",
+    agentProfile: "explore",
+    subagentsEnabled: false
+  }), [
+    "--no-auto-update", "--sandbox", "read-only", "--agent", "explore", "--no-subagents",
+    "agent", "--model", "grok-4.6", "--reasoning-effort", "xhigh", "--always-approve", "--no-leader", "stdio"
+  ]);
+  assert(!buildManagedAgentArgs({ sandbox: "workspace", subagentsEnabled: true }).includes("--no-subagents"));
+});
+
+test("plugin defaults persist atomically with strict schema and permissions", () => {
+  const base = mkdtempSync(join(tmpdir(), "grok-subagent-config-"));
+  const configPath = join(base, "nested", "config.json");
+  const source = { GROK_SUBAGENT_CONFIG_FILE: configPath };
+  try {
+    const initial = readPluginConfig(source);
+    assert.equal(initial.exists, false);
+    assert.equal(initial.config.default_session_mode, "agent");
+    assert.throws(() => writePluginConfig({ default_model: "grok-4.6" }, false, source), /confirm_persist/);
+    const written = writePluginConfig({
+      default_model: "grok-4.6",
+      default_reasoning_effort: "high",
+      allowed_slash_commands: ["context", "/compact"]
+    }, true, source);
+    assert.equal(written.config.default_model, "grok-4.6");
+    assert.deepEqual(written.config.allowed_slash_commands, ["context", "compact"]);
+    assert.equal(statSync(configPath).mode & 0o777, 0o600);
+    assert.deepEqual(JSON.parse(readFileSync(configPath, "utf8")), written.config);
+    assert.throws(() => normalizePluginConfig({ allowed_slash_commands: ["login"] }), /cannot be allowlisted/);
+    assert.throws(() => writePluginConfig({ unknown: true }, true, source), /Unsupported plugin config key/);
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
 });
 
 test("credential-shaped text is redacted", () => {
@@ -70,6 +113,58 @@ test("tool annotations reflect process and writing side effects", () => {
   assert(byName.grok_send.inputSchema.properties.confirm_write_scope);
   assert(byName.grok_status.inputSchema.properties.after_revision);
   assert.equal(byName.grok_status.inputSchema.properties.wait_seconds.maximum, 30);
+  for (const name of ["grok_capabilities", "grok_session_configure", "grok_plan_decide", "grok_command", "grok_config_get", "grok_config_set"]) {
+    assert(byName[name], `missing ${name}`);
+  }
+  assert.equal(byName.grok_capabilities.annotations.readOnlyHint, true);
+  assert.equal(byName.grok_config_set.annotations.destructiveHint, true);
+  assert(byName.grok_spawn_worker.inputSchema.properties.reasoning_effort);
+  assert(byName.grok_spawn_worker.inputSchema.properties.session_mode);
+  assert(byName.grok_spawn_worker.inputSchema.properties.subagents_enabled);
+});
+
+test("Grok sessions normalize ACP model controls and hold plan exit requests", async () => {
+  const agent = new GrokAgent({
+    cwd: tmpdir(),
+    mode: "worker",
+    role: "test",
+    model: "grok-4.6",
+    reasoningEffort: "xhigh",
+    sessionMode: "plan",
+    subagentsEnabled: false,
+    timeoutSeconds: 60,
+    originalTask: "test task"
+  });
+  assert.equal(agent.runtimeMode, "readonly");
+  agent.sessionId = "session-test";
+  agent.status = "idle";
+  agent.applySessionDescriptor({
+    models: {
+      currentModelId: "grok-4.6",
+      availableModels: [
+        { modelId: "grok-4.6", name: "Grok 4.6", _meta: { reasoningEffort: "xhigh", reasoningEfforts: [{ id: "xhigh" }, { id: "high" }] } },
+        { modelId: "grok-4.5", name: "Grok 4.5", _meta: { reasoningEffort: "high", reasoningEfforts: [{ id: "high" }, { id: "medium" }] } }
+      ]
+    }
+  });
+  const requests = [];
+  agent.request = async (method, params) => {
+    requests.push({ method, params });
+    if (method === "session/set_model") return { _meta: { model: { Ok: params.modelId } } };
+    return {};
+  };
+  await agent.configure({ model: "grok-4.5", reasoning_effort: "medium" });
+  assert.equal(agent.model, "grok-4.5");
+  assert.equal(agent.reasoningEffort, "medium");
+  assert.equal(requests[0].method, "session/set_model");
+  assert.equal(requests[0].params._meta.reasoningEffort, "medium");
+  await assert.rejects(agent.configure({ model: "unknown" }), /not advertised/);
+
+  agent.status = "running";
+  agent.handleAgentRequest({ id: 99, method: "x.ai/exit_plan_mode", params: { planContent: "Approved-looking plan" } });
+  assert.equal(agent.status, "awaiting_plan_approval");
+  assert.equal(agent.planApproval.plan_content, "Approved-looking plan");
+  agent.close();
 });
 
 test("interactive handoff command quotes paths and keeps the prompt out of the command", () => {
@@ -216,4 +311,3 @@ test("search tools are advertised and the bridge script is present", () => {
   assert.match(script, /run_search\.py$/);
   assert(statSync(script).isFile());
 });
-
