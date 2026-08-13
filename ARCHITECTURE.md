@@ -28,14 +28,16 @@ The MCP server has no third-party runtime dependencies. Each external agent owns
 
 ## ACP lifecycle
 
-1. Spawn Grok with `--no-auto-update`, the selected sandbox, model, automatic approval, and `agent stdio`.
+1. Spawn Grok with `--no-auto-update`, the selected sandbox, optional model/reasoning effort/agent profile, the explicit nested-subagent policy, automatic approval, and `agent stdio`.
 2. Send ACP `initialize` with protocol version 1.
 3. Use the official `cached_token` authentication method when advertised. Other Grok-supported environment authentication remains owned by the CLI.
 4. Create a session with `session/new`, the target directory, no nested MCP servers, and additional orchestration rules.
 5. Send the task with `session/prompt`.
 6. Consume `session/update` events. Keep public message chunks, plan entries, and bounded tool metadata; discard thought chunks.
 7. Let `grok_status` long-poll a newer progress revision for up to 30 seconds so the orchestration skill can relay visible progress without tight polling.
-8. Keep the process alive for focused follow-ups until cancellation, close, or MCP shutdown.
+8. Read the session's advertised models, reasoning efforts, modes, and slash commands. `session/set_model` and `session/set_mode` provide between-turn control without replacing the Codex harness.
+9. Hold Grok's Plan exit request for a Codex/user decision instead of approving it automatically.
+10. Keep the process alive for focused follow-ups until cancellation, close, or MCP shutdown.
 
 The child process receives only a small system environment allowlist, supported Grok authentication variables, and variables explicitly named by the operator. Failed or timed-out sessions terminate their Grok process while retaining a bounded diagnostic summary.
 
@@ -71,6 +73,35 @@ The MCP call returns after Terminal opens. The bridge does not retain the TUI pr
 4. `.git` is a file, which is the normal marker of a linked Git worktree.
 
 The process then starts with `--sandbox workspace`. The bridge never creates commits, pushes, merges, cherry-picks, or removes the worktree.
+
+### Two-process Plan gate
+
+Grok's logical Plan mode is not treated as a filesystem boundary. A worker requested with `session_mode: "plan"` therefore uses two processes:
+
+```text
+linked worktree
+  -> Grok process A: read-only sandbox + Plan mode
+  -> pending plan approval in MCP
+  -> approve + fresh confirm_write_scope
+  -> terminate process A
+  -> Grok process B: workspace sandbox + Agent mode
+  -> prompt includes original task and approved plan
+```
+
+`request_changes` responds to the pending Grok Plan request, reasserts Plan mode, and sends the feedback in the same read-only process. `cancel` finishes without starting process B. Because ACP does not expose a portable session-clone primitive, implementation starts a new Grok session; the original task and approved public plan are carried forward explicitly.
+
+## Model, effort, agent, and command controls
+
+- Model IDs and reasoning-effort values come from each ACP `session/new` descriptor. The bridge validates changes against that descriptor and forwards them through `session/set_model` with Grok's `reasoningEffort` metadata.
+- `agent_profile` is a named Grok CLI profile passed at process startup. It is separate from Agent/Plan session mode.
+- Nested Grok subagents default to disabled (`--no-subagents`) and require an explicit confirmation to enable.
+- `grok_command` accepts only commands both advertised by the current ACP session and present in the plugin allowlist. Commands that affect credentials, global approval, hooks, sharing/export, memory, plugins, or native configuration are permanently blocked.
+
+## Plugin configuration
+
+The bridge owns a narrow JSON config at `${XDG_CONFIG_HOME:-~/.config}/grok-subagent/config.json`; it never rewrites `~/.grok/config.toml`. `grok_config_set` validates a fixed schema, requires explicit persistence confirmation, writes a mode-0600 temporary file, then atomically renames it. No tokens, hook commands, inline agent definitions, or arbitrary native Grok keys are accepted.
+
+Configuration precedence is explicit tool input, then plugin JSON, then `GROK_MODEL` for model selection, then Grok's own defaults.
 
 ## Why automatic Grok approval is used
 

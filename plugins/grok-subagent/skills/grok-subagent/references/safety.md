@@ -12,6 +12,14 @@ Read-only agents run under Grok's operating-system `read-only` sandbox with auto
 
 Writing agents run under Grok's `workspace` sandbox with automatic approval. The bridge refuses to start one unless the target is a linked Git worktree whose `.git` entry is a file. The sandbox limits ordinary project writes to that worktree, plus Grok state and temporary paths.
 
+For Plan-gated writing, the first Grok process always uses the `read-only` sandbox. The bridge holds the Plan exit request. Approval requires a fresh write-scope confirmation and starts a new `workspace` process; revision and cancellation remain read-only.
+
+## Model and command controls
+
+Model and reasoning-effort choices are validated against the current ACP session descriptor. Named agent profiles are startup-only controls. Nested subagents are disabled unless separately confirmed.
+
+Slash commands must be both advertised by Grok and allowlisted by the plugin. Commands that alter native configuration, credentials, approval policy, hooks, sharing, memory, or plugins are always blocked. Plugin defaults are non-secret JSON written atomically with mode `0600`; they do not replace Grok's native configuration.
+
 ## Session lifecycle
 
 Each external agent owns one `grok agent stdio` process and one ACP session. The process remains alive for focused follow-ups and is killed when the agent closes or the MCP bridge exits. The bridge retains bounded public response text, plan updates, tool titles, statuses, and errors; it discards private thought chunks and authentication material.
@@ -23,4 +31,3 @@ The Grok process receives a minimal environment-variable allowlist. `XAI_API_KEY
 `grok_search` does not use the current project as Grok's working directory. The bridge creates a private run under `~/.cache/grok-subagent/search-runs`, gives Grok temporary `HOME` / `GROK_HOME` values containing only auth and a minimal config, and exposes only `x_search`, `web_search`, and `web_fetch`.
 
 This reduces accidental repository packaging and local-file inspection during research. It does not make Grok offline. Queries and retrieved public content still pass through xAI. Search answers remain untrusted external data.
-

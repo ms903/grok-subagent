@@ -1,6 +1,6 @@
 # Grok Subagent for Codex
 
-[![CI](https://github.com/Walvez/grok-subagent/actions/workflows/ci.yml/badge.svg)](https://github.com/Walvez/grok-subagent/actions/workflows/ci.yml)
+[![CI](https://github.com/ms903/grok-subagent/actions/workflows/ci.yml/badge.svg)](https://github.com/ms903/grok-subagent/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Codex Plugin](https://img.shields.io/badge/Codex-plugin-111827)](plugins/grok-subagent/.codex-plugin/plugin.json)
 
@@ -14,6 +14,8 @@
 
 - **异构模型复核**：让 Grok 独立调查、审查代码或反驳方案，再由 Codex 核验结论；
 - **完整会话管理**：支持状态查看、持续追问、结果读取、取消和关闭，而不是一次性复制答案；
+- **完整控制面**：按任务选择 Grok 模型、推理深度、Agent/Plan 会话模式和内置 Agent profile；
+- **受控 Plan 审批**：写入任务先在 OS 只读沙箱生成计划，经 Codex/用户批准后才重启到隔离 worktree 实施；
 - **默认安全隔离**：调查默认只读；写入必须经过明确授权，并且只能发生在独立 linked Git worktree 中；
 - **Grok 原生搜索**：通过隔离目录调用 Grok 的 X Search / Web Search，适合查推文、Reddit 讨论和实时公开信息。
 
@@ -31,8 +33,8 @@ grok
 ### 2. 安装 Codex 插件
 
 ```bash
-codex plugin marketplace add Walvez/grok-subagent
-codex plugin add grok-subagent@walvez-grok
+codex plugin marketplace add ms903/grok-subagent
+codex plugin add grok-subagent@ms903-grok
 ```
 
 安装后请**新建一个 Codex 任务**，让 Skill 和 MCP 工具进入新的任务上下文。
@@ -129,12 +131,27 @@ flowchart LR
 
 写入模式必须得到用户明确授权。插件会拒绝主检出目录，也会拒绝 `.git` 不是 worktree 文件的普通目录；对写入 Agent 继续追问时，还必须再次确认没有超出已获批的写入范围。
 
+### 指定模型、推理深度、Agent 与 Plan
+
+可以直接告诉 Codex：
+
+```text
+调用 Grok：使用 grok-4.6、high 推理深度和 plan profile，
+先在只读 Plan 模式审查当前项目并给出实施计划；把计划展示给我，
+未经我批准不要进入 worktree 写入阶段，也不要启用 Grok 子 Agent。
+```
+
+`grok_capabilities` 会以当前 Grok 安装为准列出模型和内置 Agent profile。`grok_session_configure` 可在两轮之间通过 ACP 切换模型、推理深度或 Agent/Plan 模式。写入 Worker 以 `session_mode: "plan"` 启动时，规划进程始终使用 `read-only` 沙箱；只有 `grok_plan_decide` 收到 `approve` 和新的写入范围确认后，Bridge 才启动 `workspace` 进程执行获批计划。请求修改计划不会获得写权限。
+
+Grok 内部子 Agent 默认关闭。启用时，任务参数和确认参数都必须显式为真；这与选择 `agent_profile` 是两个独立控制项。
+
 ## 安全模型一览
 
 | 模式 | 文件权限 | 启动条件 | 完成后的责任 |
 | --- | --- | --- | --- |
 | 只读调查 | Grok `read-only` 沙箱 | 任意可读的绝对目录 | Codex 核验文件、命令和结论 |
 | 写入 Worker | Grok `workspace` 沙箱，仅限 linked worktree | 用户明确授权，且 Bridge 通过 worktree 检查 | Codex 检查 diff 并重新运行测试 |
+| Plan 后写入 | 规划阶段 `read-only`；批准后才切换 `workspace` | linked worktree + 启动授权 + 计划批准时再次确认 | Codex 先展示计划，再审查实施 diff |
 
 重要边界：
 
@@ -157,6 +174,11 @@ flowchart LR
 | `grok_handoff_interactive` | 在新的 macOS Terminal 窗口打开可交互 Grok TUI，Codex 完成 prompt 移交后不再监督 | 只读或 Grok 创建的隔离 worktree |
 | `grok_search` | 在仓库外运行 Grok 原生 X/Web 搜索并返回完整答案 | 私有 research 目录，不进入当前仓库 |
 | `grok_search_list` / `grok_search_show` | 列出或读取保留的搜索结果 | 只读 |
+| `grok_capabilities` | 查看 Grok 版本、模型、Agent profile、配置来源和插件默认值 | 只读 |
+| `grok_session_configure` | 在空闲轮次间切换模型、推理深度和 Agent/Plan 模式 | ACP 控制操作 |
+| `grok_plan_decide` | 批准计划、要求修改或取消；写入批准会启动隔离 Worker | 审批控制操作 |
+| `grok_command` | 运行 Grok 当前宣告且插件允许的安全 `/xxxx` 命令 | 受 allowlist 限制 |
+| `grok_config_get` / `grok_config_set` | 读取或经确认原子更新插件自己的非敏感默认值 | 插件配置文件 |
 | `grok_status` | 查看生命周期、运行时长、计划、最近工具活动和公开回答片段；支持按进度版本等待增量 | 只读 |
 | `grok_result` | 获取公开回答，可短暂等待当前轮次完成 | 只读 |
 | `grok_send` | 在同一会话中聚焦追问；写入会话需重新确认范围 | 继承会话模式 |
@@ -184,29 +206,32 @@ Grok 运行期间，Skill 会让 Codex 用 `grok_status` 做最长 30 秒的增�
 - 已安装并登录官方 Grok Build CLI；
 - 写入模式需要 Git。
 
-最近验证环境（2026-08-03）：macOS、Grok CLI `0.2.114`、插件 `0.4.0`、`grok-4.5`，以及通过浏览器登录的 SuperGrok 账号。同日已 live 验证隔离式 `grok_search`。插件也沿用官方 CLI 支持的其他认证方式，例如 `XAI_API_KEY`，但不会自行处理认证流程。
+最近验证环境（2026-08-14）：Linux、Grok CLI `1.0.3`、插件 `0.5.0`；capability/ACP 探测发现 `grok-4.6`（默认，支持 `low/medium/high/xhigh`）和 `grok-4.5`（支持 `low/medium/high`），以及 `general-purpose`、`explore`、`plan` profile。同日已 live 验证模型/推理深度/profile 控制、安全 slash command，以及“只读 Plan → 批准 → 临时 linked worktree 写入”的完整流程。这里列出的是该次安装的结果，不是硬编码兼容清单；实际可用项以 `grok_capabilities` 和会话返回为准。插件沿用官方 CLI 支持的认证方式，不自行处理认证。
 
 官方参考：[Grok Build](https://docs.x.ai/build/overview)、[ACP 与无头模式](https://docs.x.ai/build/cli/headless-scripting)、[CLI 参数](https://docs.x.ai/build/cli/reference)。
 
 ## 配置
 
-本项目没有 npm 运行时依赖，也不保存凭据。
+本项目没有 npm 运行时依赖，也不保存凭据。非敏感插件默认值保存在 `${XDG_CONFIG_HOME:-~/.config}/grok-subagent/config.json`；该文件以 `0600` 权限原子写入，不会修改 Grok 原生的 `~/.grok/config.toml`。
+
+配置优先级是：每次工具调用的显式参数 > 插件配置 > `GROK_MODEL`（仅模型）> Grok CLI 自身默认值。可持久化字段只有 `default_model`、`default_reasoning_effort`、`default_session_mode`、`default_agent_profile`、`default_subagents_enabled` 和 `allowed_slash_commands`，且 `grok_config_set` 必须带明确的 `confirm_persist`。
 
 | 环境变量 | 用途 | 默认值 |
 | --- | --- | --- |
 | `GROK_BIN` | 官方 Grok CLI 的路径或命令名 | `~/.grok/bin/grok`，然后尝试 `grok` |
-| `GROK_MODEL` | 默认模型 ID | `grok-4.5` |
+| `GROK_MODEL` | 未配置插件默认值时的模型 ID | 交给 Grok CLI 选择 |
 | `GROK_PASSTHROUGH_ENV` | 需要额外传给 Grok 的环境变量名，用逗号分隔 | 未设置 |
+| `GROK_SUBAGENT_CONFIG_FILE` | 覆盖插件配置路径，主要用于测试或集中部署 | XDG 配置目录下的 `grok-subagent/config.json` |
 
 每次启动 Grok Agent 时也可以单独指定模型。Grok 默认只继承最小系统环境，以及存在时的 `XAI_API_KEY`；其他宿主变量不会自动继承，除非变量名被明确写入 `GROK_PASSTHROUGH_ENV`。
 
 ## 本地开发与测试
 
 ```bash
-git clone https://github.com/Walvez/grok-subagent.git
+git clone https://github.com/ms903/grok-subagent.git
 cd grok-subagent
 codex plugin marketplace add "$PWD"
-codex plugin add grok-subagent@walvez-grok
+codex plugin add grok-subagent@ms903-grok
 ```
 
 无需安装项目依赖即可运行确定性检查：
@@ -221,23 +246,22 @@ npm test
 npm run test:e2e
 ```
 
-可用 `GROK_E2E_CWD=/绝对路径` 指定只读测试目录。测试还会验证普通主检出目录无法启动写入模式。
+可用 `GROK_E2E_CWD=/绝对路径` 指定只读测试目录。测试还会验证普通主检出目录无法启动写入模式，并在临时 linked worktree 中完整验证 Plan 审批门。
 
 升级 Git marketplace 快照：
 
 ```bash
-codex plugin marketplace upgrade walvez-grok
-codex plugin add grok-subagent@walvez-grok
+codex plugin marketplace upgrade ms903-grok
+codex plugin add grok-subagent@ms903-grok
 ```
 
-从 `0.3.0` 或更早版本升级时，marketplace 标识由 `grok-subagent` 改为
-`walvez-grok`，需要执行一次迁移：
+从 Walvez 上游 marketplace 切换到此 fork 时，需要执行一次迁移：
 
 ```bash
-codex plugin remove grok-subagent@grok-subagent
-codex plugin marketplace remove grok-subagent
-codex plugin marketplace add Walvez/grok-subagent
-codex plugin add grok-subagent@walvez-grok
+codex plugin remove grok-subagent@walvez-grok
+codex plugin marketplace remove walvez-grok
+codex plugin marketplace add ms903/grok-subagent
+codex plugin add grok-subagent@ms903-grok
 ```
 
 迁移后请新建 Codex 任务。后续版本可继续使用上面的常规升级命令。
@@ -249,6 +273,10 @@ codex plugin add grok-subagent@walvez-grok
 - 插件不会自动提交、合并、推送或删除 worktree；
 - Grok 是通过 ACP/MCP 接入的外部 Agent，不是 Codex 内部原生团队 Agent；
 - Grok CLI、模型名和沙箱行为未来可能改变，高安全环境应固定并集中管理 Grok 版本。
+
+## 上游与维护
+
+此 fork 基于 [`Walvez/grok-subagent`](https://github.com/Walvez/grok-subagent) 继续开发，并保留 MIT 许可和原始历史。`ms903-grok` 是此 fork 的 marketplace 标识；插件名仍为 `grok-subagent`。
 
 ## 致谢
 

@@ -1,6 +1,6 @@
 # Grok Subagent for Codex
 
-[![CI](https://github.com/Walvez/grok-subagent/actions/workflows/ci.yml/badge.svg)](https://github.com/Walvez/grok-subagent/actions/workflows/ci.yml)
+[![CI](https://github.com/ms903/grok-subagent/actions/workflows/ci.yml/badge.svg)](https://github.com/ms903/grok-subagent/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Codex Plugin](https://img.shields.io/badge/Codex-plugin-111827)](plugins/grok-subagent/.codex-plugin/plugin.json)
 
@@ -16,6 +16,8 @@ Core capabilities:
 
 - **Independent cross-model review:** Grok investigates, reviews code, or challenges a plan; Codex verifies the findings.
 - **Managed sessions:** inspect status, continue a conversation, retrieve results, cancel, and close instead of copying one-off answers.
+- **Full control surface:** select the Grok model, reasoning effort, Agent/Plan session mode, and built-in agent profile per task.
+- **Gated plans:** writing tasks plan in an OS-enforced read-only process and start an isolated worktree worker only after approval.
 - **Safe defaults:** investigations are read-only; writing requires explicit authorization and an isolated linked Git worktree.
 
 ## 60-second quick start
@@ -32,8 +34,8 @@ grok
 ### 2. Install the Codex plugin
 
 ```bash
-codex plugin marketplace add Walvez/grok-subagent
-codex plugin add grok-subagent@walvez-grok
+codex plugin marketplace add ms903/grok-subagent
+codex plugin add grok-subagent@ms903-grok
 ```
 
 Start a **new Codex task** after installation so the skill and MCP tools are loaded into the new task context.
@@ -130,12 +132,27 @@ Do not merge, commit, or push. Review the diff and run tests yourself afterward.
 
 Writing mode requires explicit user authorization. The plugin rejects the primary checkout and any directory whose `.git` entry is not a linked-worktree file. Follow-ups to a writing agent must confirm that they remain within the same authorized write scope.
 
+### Select model, effort, agent, and Plan mode
+
+Tell Codex, for example:
+
+```text
+Call Grok with grok-4.6, high reasoning effort, and the plan profile.
+Inspect this project in Plan mode and show me the implementation plan.
+Do not enable Grok subagents or write to the worktree until I approve it.
+```
+
+`grok_capabilities` discovers models and built-in agent profiles from the current Grok installation. Between turns, `grok_session_configure` changes the model, reasoning effort, or Agent/Plan mode through ACP. A writing worker started with `session_mode: "plan"` plans in a separate `read-only` process. Only `grok_plan_decide` with `approve` and a fresh write-scope confirmation starts the `workspace` process. Plan feedback never grants write access.
+
+Nested Grok subagents are disabled by default. Enabling them requires both the option and an explicit confirmation; this is independent of selecting an `agent_profile`.
+
 ## Security model at a glance
 
 | Mode | Filesystem access | Startup condition | Responsibility afterward |
 | --- | --- | --- | --- |
 | Read-only investigation | Grok `read-only` sandbox | Any readable absolute directory | Codex verifies files, commands, and conclusions |
 | Writing worker | Grok `workspace` sandbox, limited to a linked worktree | Explicit user authorization plus bridge worktree validation | Codex inspects the diff and reruns tests |
+| Plan then write | `read-only` planning; `workspace` only after approval | Linked worktree + startup authorization + approval-time reconfirmation | Codex presents the plan, then reviews the implementation diff |
 
 Important boundaries:
 
@@ -158,6 +175,11 @@ Read [SECURITY.md](SECURITY.md) before using the plugin on private code.
 | `grok_handoff_interactive` | Open an interactive Grok TUI in a new macOS Terminal window and stop Codex supervision after prompt handoff | Read-only or a Grok-created isolated worktree |
 | `grok_search` | Run Grok-native X/Web research outside the current repository | Private research directory |
 | `grok_search_list` / `grok_search_show` | List or read retained search answers | Read-only |
+| `grok_capabilities` | Inspect Grok version, models, agent profiles, config sources, and plugin defaults | Read-only |
+| `grok_session_configure` | Change model, reasoning effort, or Agent/Plan mode between turns | ACP control operation |
+| `grok_plan_decide` | Approve, revise, or cancel a plan; worker approval starts isolated implementation | Approval control operation |
+| `grok_command` | Run a Grok `/xxxx` command only when both advertised and allowlisted | Allowlist-controlled |
+| `grok_config_get` / `grok_config_set` | Read or explicitly persist non-secret plugin defaults atomically | Plugin config file |
 | `grok_status` | Read lifecycle, elapsed time, plan, recent tool activity, and a public-response preview; optionally wait for a newer revision | Read-only |
 | `grok_result` | Read the public answer, optionally waiting briefly | Read-only |
 | `grok_send` | Send a focused follow-up; writing sessions require renewed scope confirmation | Inherits session mode |
@@ -185,29 +207,32 @@ While Grok is running, the skill asks Codex to use `grok_status` for incremental
 - the official Grok Build CLI, authenticated locally;
 - Git when using writing workers.
 
-Last verified environment (2026-08-03): macOS, Grok CLI `0.2.114`, plugin `0.4.0`, `grok-4.5`, and a browser-authenticated SuperGrok account. Isolated `grok_search` was live-verified the same day. The plugin also follows other authentication methods supported by the official CLI, including `XAI_API_KEY`, without implementing authentication itself.
+Last verified environment (2026-08-14): Linux, Grok CLI `1.0.3`, and plugin `0.5.0`. Capability and ACP probes discovered `grok-4.6` (default; `low/medium/high/xhigh`) and `grok-4.5` (`low/medium/high`), plus the `general-purpose`, `explore`, and `plan` profiles. The same run live-verified model/effort/profile control, a safe slash command, and the full read-only Plan-to-approved-temporary-worktree flow. These are observations from that installation, not a hard-coded support list; use `grok_capabilities` and each session descriptor as the source of truth. Authentication remains owned by the official CLI.
 
 Official references: [Grok Build overview](https://docs.x.ai/build/overview), [Headless & ACP](https://docs.x.ai/build/cli/headless-scripting), and [CLI reference](https://docs.x.ai/build/cli/reference).
 
 ## Configuration
 
-The plugin has no npm runtime dependencies and stores no credentials.
+The plugin has no npm runtime dependencies and stores no credentials. Non-secret defaults live at `${XDG_CONFIG_HOME:-~/.config}/grok-subagent/config.json`; writes are atomic with mode `0600`, and the plugin never edits Grok's native `~/.grok/config.toml`.
+
+Precedence is: explicit tool arguments > plugin config > `GROK_MODEL` (model only) > the Grok CLI default. The only persistent fields are `default_model`, `default_reasoning_effort`, `default_session_mode`, `default_agent_profile`, `default_subagents_enabled`, and `allowed_slash_commands`. `grok_config_set` requires `confirm_persist`.
 
 | Variable | Meaning | Default |
 | --- | --- | --- |
 | `GROK_BIN` | Absolute path or command name for the official Grok CLI | `~/.grok/bin/grok`, then `grok` |
-| `GROK_MODEL` | Default Grok model ID | `grok-4.5` |
+| `GROK_MODEL` | Model ID when no plugin default is configured | Let Grok select |
 | `GROK_PASSTHROUGH_ENV` | Comma-separated extra environment-variable names to pass to Grok | unset |
+| `GROK_SUBAGENT_CONFIG_FILE` | Override the plugin config path, primarily for tests or managed deployments | XDG `grok-subagent/config.json` |
 
 The model can also be selected per agent. Grok receives a minimal system environment plus `XAI_API_KEY` when present. Other host variables are not inherited unless their names are explicitly listed in `GROK_PASSTHROUGH_ENV`.
 
 ## Local development and tests
 
 ```bash
-git clone https://github.com/Walvez/grok-subagent.git
+git clone https://github.com/ms903/grok-subagent.git
 cd grok-subagent
 codex plugin marketplace add "$PWD"
-codex plugin add grok-subagent@walvez-grok
+codex plugin add grok-subagent@ms903-grok
 ```
 
 Run the deterministic checks without installing project dependencies:
@@ -222,23 +247,22 @@ The authenticated end-to-end test consumes a small amount of Grok usage:
 npm run test:e2e
 ```
 
-Set `GROK_E2E_CWD=/absolute/project/path` to select another read-only target. The test also confirms that writing mode rejects a primary checkout.
+Set `GROK_E2E_CWD=/absolute/project/path` to select another read-only target. The test also rejects a primary checkout and exercises the complete Plan approval gate in a temporary linked worktree.
 
 Upgrade a Git marketplace snapshot with:
 
 ```bash
-codex plugin marketplace upgrade walvez-grok
-codex plugin add grok-subagent@walvez-grok
+codex plugin marketplace upgrade ms903-grok
+codex plugin add grok-subagent@ms903-grok
 ```
 
-When upgrading from `0.3.0` or earlier, migrate once from the old
-`grok-subagent` marketplace ID to `walvez-grok`:
+When switching from the Walvez upstream marketplace to this fork, migrate once:
 
 ```bash
-codex plugin remove grok-subagent@grok-subagent
-codex plugin marketplace remove grok-subagent
-codex plugin marketplace add Walvez/grok-subagent
-codex plugin add grok-subagent@walvez-grok
+codex plugin remove grok-subagent@walvez-grok
+codex plugin marketplace remove walvez-grok
+codex plugin marketplace add ms903/grok-subagent
+codex plugin add grok-subagent@ms903-grok
 ```
 
 Start a new Codex task after migration. Later releases can use the regular
@@ -251,6 +275,10 @@ upgrade commands above.
 - The bridge does not merge, commit, push, or delete worktrees.
 - Grok is an external ACP worker exposed through MCP, not a native Codex team subagent.
 - Grok CLI behavior, model names, and sandbox implementation may change. Pin or centrally manage Grok versions in sensitive environments.
+
+## Upstream and maintenance
+
+This fork continues from [`Walvez/grok-subagent`](https://github.com/Walvez/grok-subagent) and preserves its MIT license and history. `ms903-grok` is this fork's marketplace ID; the plugin name remains `grok-subagent`.
 
 ## Acknowledgements
 
