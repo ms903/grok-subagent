@@ -14,7 +14,7 @@ try {
   for (const name of [
     "grok_spawn_readonly", "grok_spawn_worker", "grok_handoff_interactive", "grok_capabilities",
     "grok_session_configure", "grok_plan_decide", "grok_command", "grok_config_get", "grok_config_set",
-    "grok_status", "grok_result", "grok_send", "grok_cancel", "grok_close", "grok_list"
+    "grok_progress", "grok_status", "grok_result", "grok_send", "grok_cancel", "grok_close", "grok_list"
   ]) {
     assert(names.includes(name), `missing ${name}`);
   }

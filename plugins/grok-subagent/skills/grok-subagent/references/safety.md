@@ -20,6 +20,12 @@ Model and reasoning-effort choices are validated against the current ACP session
 
 Slash commands must be both advertised by Grok and allowlisted by the plugin. Commands that alter native configuration, credentials, approval policy, hooks, sharing, memory, or plugins are always blocked. Plugin defaults are non-secret JSON written atomically with mode `0600`; they do not replace Grok's native configuration.
 
+## Native Codex monitor agents
+
+A native Codex `gpt-5.6-luna` or `gpt-5.6-terra` monitor may own Grok MCP lifecycle and progress calls so the parent Codex agent stays responsive. This is separate from Grok's nested-subagent feature. The monitor inherits no additional filesystem, write, publication, or approval authority.
+
+Progress relays may include lifecycle status, elapsed time, public plan entries, bounded public-response previews, and tool titles/status. They must not include private thought chunks. A pending Grok Plan decision always returns to the parent and user; the monitor must not approve it autonomously.
+
 ## Session lifecycle
 
 Each external agent owns one `grok agent stdio` process and one ACP session. The process remains alive for focused follow-ups and is killed when the agent closes or the MCP bridge exits. The bridge retains bounded public response text, plan updates, tool titles, statuses, and errors; it discards private thought chunks and authentication material.

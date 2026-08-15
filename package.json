@@ -1,6 +1,6 @@
 {
   "name": "grok-subagent-codex-marketplace",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "private": true,
   "description": "A Codex plugin that delegates bounded work and isolated Grok-native search to the official Grok Build CLI.",
   "scripts": {

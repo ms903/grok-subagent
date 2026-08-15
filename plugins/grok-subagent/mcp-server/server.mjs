@@ -8,7 +8,7 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 
-const VERSION = "0.5.0";
+const VERSION = "0.6.0";
 const MAX_AGENTS = 3;
 const MAX_RETAINED_FAILED_AGENTS = 3;
 const MAX_TEXT = 120_000;
@@ -242,6 +242,21 @@ const TOOL_DEFINITIONS = [
       additionalProperties: false
     },
     annotations: { title: "Update Grok Subagent config", readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false }
+  },
+  {
+    name: "grok_progress",
+    description: "Long-poll one compact, public progress snapshot for a managed Grok agent. Optimized for native Codex monitor subagents and never returns private thought chunks.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        agent_id: { type: "string" },
+        after_revision: { type: "integer", minimum: 0, description: "Return when visible progress is newer than this revision." },
+        wait_seconds: { type: "integer", minimum: 0, maximum: 30, default: 30 }
+      },
+      required: ["agent_id"],
+      additionalProperties: false
+    },
+    annotations: readOnlyAnnotations("Wait for compact Grok progress")
   },
   {
     name: "grok_status",
@@ -1196,6 +1211,36 @@ async function waitForRevision(agent, afterRevision, seconds) {
   }
 }
 
+function progressSnapshot(agent, afterRevision) {
+  const hasCursor = Number.isInteger(afterRevision) && afterRevision >= 0;
+  const approvalContent = agent.planApproval?.plan_content || "";
+  return {
+    agent_id: agent.id,
+    status: agent.status,
+    phase: agent.phase,
+    revision: agent.revision,
+    changed: !hasCursor || agent.revision > afterRevision,
+    elapsed_seconds: Math.max(0, Math.trunc((Date.now() - Date.parse(agent.startedAt)) / 1000)),
+    model: agent.model,
+    reasoning_effort: agent.reasoningEffort,
+    session_mode: agent.sessionMode,
+    runtime_access: agent.runtimeMode,
+    action_required: agent.planApproval ? "plan_approval" : (agent.status === "failed" ? "inspect_error" : null),
+    plan: agent.plan,
+    pending_plan_approval: agent.planApproval ? {
+      received_at: agent.planApproval.received_at,
+      plan_content: approvalContent.slice(0, 12_000),
+      plan_content_truncated: approvalContent.length > 12_000
+    } : null,
+    recent_tools: agent.toolEvents
+      .filter(event => !hasCursor || event.revision > afterRevision)
+      .slice(-5),
+    response_chars: agent.text.length,
+    public_response_preview: agent.text.slice(-1200),
+    error: agent.error
+  };
+}
+
 
 function searchScriptPath() {
   return join(dirname(fileURLToPath(import.meta.url)), "..", "scripts", "run_search.py");
@@ -1282,6 +1327,11 @@ async function callTool(name, args = {}) {
     case "grok_session_configure": return getAgent(args.agent_id).configure(args);
     case "grok_plan_decide": return getAgent(args.agent_id).decidePlan(args);
     case "grok_command": return getAgent(args.agent_id).runSlashCommand(args);
+    case "grok_progress": {
+      const agent = getAgent(args.agent_id);
+      await waitForRevision(agent, args.after_revision, args.wait_seconds);
+      return progressSnapshot(agent, args.after_revision);
+    }
     case "grok_status": {
       const agent = getAgent(args.agent_id);
       await waitForRevision(agent, args.after_revision, args.wait_seconds);
@@ -1387,6 +1437,7 @@ export {
   normalizePluginConfig,
   normalizeSessionMode,
   pluginConfigPath,
+  progressSnapshot,
   readPluginConfig,
   searchScriptPath,
   showSearchRun,
