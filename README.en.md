@@ -16,6 +16,7 @@ Core capabilities:
 
 - **Independent cross-model review:** Grok investigates, reviews code, or challenges a plan; Codex verifies the findings.
 - **Managed sessions:** inspect status, continue a conversation, retrieve results, cancel, and close instead of copying one-off answers.
+- **Responsive native monitoring:** long tasks default to a low-latency Luna subagent that calls and monitors Grok while the main Codex agent remains responsive; Terra is reserved for complex plan interpretation or synthesis.
 - **Full control surface:** select the Grok model, reasoning effort, Agent/Plan session mode, and built-in agent profile per task.
 - **Gated plans:** writing tasks plan in an OS-enforced read-only process and start an isolated worktree worker only after approval.
 - **Safe defaults:** investigations are read-only; writing requires explicit authorization and an isolated linked Git worktree.
@@ -66,13 +67,16 @@ On success, Codex starts a Grok agent, receives an agent ID, and reads the resul
 ```mermaid
 flowchart LR
     U["User"] --> C["Codex orchestrator"]
-    C --> S["Grok Subagent Skill"]
+    C --> N["Native Luna / Terra monitor"]
+    C -. "quick call / fallback" .-> S["Grok Subagent Skill"]
+    N --> S
     S --> M["Local MCP bridge"]
     M --> A["Official Grok ACP: grok agent stdio"]
     A --> R["Read-only project"]
     A --> W["Isolated Git worktree"]
     A --> X["xAI / Grok service"]
-    M --> C
+    M --> N
+    N --> C
     C --> V["Codex verification and final result"]
 ```
 
@@ -89,7 +93,7 @@ The bridge is an orchestration adapter, not another full coding-agent framework.
 | Native Codex subagents | Tighter integration, but generally within the same platform and model family |
 | **This plugin: official Grok CLI + ACP + MCP** | Keeps the supported Grok agent runtime and adds a narrow, auditable Codex control layer |
 
-This plugin does not replace native Codex subagents. Native subagents are a better fit for same-platform parallel decomposition. This plugin is useful when you specifically want **model diversity**: Grok provides an independent review or isolated implementation, and Codex remains the final verifier.
+This plugin does not replace native Codex subagents; it composes them. A native Luna or Terra subagent handles lightweight monitoring and progress relay, Grok performs independent investigation or isolated implementation as an external model, and the main Codex agent keeps orchestrating and verifying. The plugin skill creates native monitors at the Codex layer. The MCP bridge itself only manages Grok ACP processes and does not replace the Codex harness.
 
 ### Real-time X / community search
 
@@ -180,6 +184,7 @@ Read [SECURITY.md](SECURITY.md) before using the plugin on private code.
 | `grok_plan_decide` | Approve, revise, or cancel a plan; worker approval starts isolated implementation | Approval control operation |
 | `grok_command` | Run a Grok `/xxxx` command only when both advertised and allowlisted | Allowlist-controlled |
 | `grok_config_get` / `grok_config_set` | Read or explicitly persist non-secret plugin defaults atomically | Plugin config file |
+| `grok_progress` | Return a compact public progress delta for native monitor subagents, with up to 30 seconds of long polling | Read-only |
 | `grok_status` | Read lifecycle, elapsed time, plan, recent tool activity, and a public-response preview; optionally wait for a newer revision | Read-only |
 | `grok_result` | Read the public answer, optionally waiting briefly | Read-only |
 | `grok_send` | Send a focused follow-up; writing sessions require renewed scope confirmation | Inherits session mode |
@@ -197,17 +202,22 @@ Read-only work uses Grok's `read-only` sandbox. Implementation work uses `--work
 
 ### How visible progress works
 
-While Grok is running, the skill asks Codex to use `grok_status` for incremental waits of up to 30 seconds and relay material plan steps, tool status, elapsed time, or public-response previews as concise progress messages in the Codex task. It also emits a heartbeat within 60 seconds when Grok exposes no new detail. The bridge never forwards private chain-of-thought, so this is verifiable work status rather than hidden reasoning text.
+Long Grok inference, review, and search tasks default to a native Codex monitor subagent. Routine startup, waiting, progress relay, and result transport use `gpt-5.6-luna` with low reasoning. The skill uses `gpt-5.6-terra` with medium reasoning only when the monitor must interpret a complex plan, substantively steer Grok, or synthesize several results. An explicit user model choice wins. If native collaboration is unavailable, the skill falls back to direct polling without failing the Grok task.
+
+The monitor calls `grok_progress` with a revision cursor for incremental waits of up to 30 seconds. It sends the main Codex agent a native-mailbox update on startup, material plan/tool/state/public-answer changes, completion, and at least one heartbeat every 60 seconds. The main agent relays concise progress in the Codex task while it remains free to verify work or answer the user. On `action_required: "plan_approval"`, the monitor reports the public plan and pauses; only the main Codex agent and user can decide.
+
+The bridge discards private thought chunks and exposes only lifecycle, elapsed time, plan entries, tool titles/status, bounded public-answer previews, and sanitized errors. Because isolated `grok_search` is synchronous, its monitor can currently expose only start, heartbeat, and completion rather than internal search-tool steps.
 
 ## Requirements and compatibility
 
 - macOS, Linux, or WSL;
 - Node.js 22 or newer;
 - a recent Codex CLI/Desktop build with plugin support;
+- native Luna/Terra monitoring requires a Codex build with subagent collaboration; direct polling remains the fallback;
 - the official Grok Build CLI, authenticated locally;
 - Git when using writing workers.
 
-Last verified environment (2026-08-14): Linux, Grok CLI `1.0.3`, and plugin `0.5.0`. Capability and ACP probes discovered `grok-4.6` (default; `low/medium/high/xhigh`) and `grok-4.5` (`low/medium/high`), plus the `general-purpose`, `explore`, and `plan` profiles. The same run live-verified model/effort/profile control, a safe slash command, and the full read-only Plan-to-approved-temporary-worktree flow. These are observations from that installation, not a hard-coded support list; use `grok_capabilities` and each session descriptor as the source of truth. Authentication remains owned by the official CLI.
+Last verified environment (2026-08-16): Linux, Grok CLI `1.0.3`, and plugin `0.6.0`. A capability probe discovered `grok-4.6` (default) and `grok-4.5`. A native Luna subagent then started and monitored a real `grok-4.6`/low/read-only task against a synthetic directory, relayed revision progress and the result, and closed the session. The 0.6.0 deterministic suite covers the new `grok_progress` protocol. Authenticated E2E also passed against a temporary directory containing only synthetic data and covered model/effort/profile control, a safe slash command, and the complete read-only Plan-to-approved-temporary-worktree flow. E2E sends relevant content from the selected test directory to xAI, so testing a real repository still requires explicit authorization. These are observations from that installation, not a hard-coded support list; use `grok_capabilities` and each session descriptor as the source of truth. Authentication remains owned by the official CLI.
 
 Official references: [Grok Build overview](https://docs.x.ai/build/overview), [Headless & ACP](https://docs.x.ai/build/cli/headless-scripting), and [CLI reference](https://docs.x.ai/build/cli/reference).
 
@@ -274,6 +284,7 @@ upgrade commands above.
 - Public answer text is bounded to prevent unbounded memory growth.
 - The bridge does not merge, commit, push, or delete worktrees.
 - Grok is an external ACP worker exposed through MCP, not a native Codex team subagent.
+- The native monitor is a skill-level orchestration convention, not an MCP-server capability; older Codex builds fall back to direct polling.
 - Grok CLI behavior, model names, and sandbox implementation may change. Pin or centrally manage Grok versions in sensitive environments.
 
 ## Upstream and maintenance

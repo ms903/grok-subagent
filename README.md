@@ -14,6 +14,7 @@
 
 - **异构模型复核**：让 Grok 独立调查、审查代码或反驳方案，再由 Codex 核验结论；
 - **完整会话管理**：支持状态查看、持续追问、结果读取、取消和关闭，而不是一次性复制答案；
+- **响应式原生监控**：长任务默认由低延迟 Luna 子智能体调用并监控 Grok，主 Codex 保持可响应；复杂计划或多结果综合才升级到 Terra；
 - **完整控制面**：按任务选择 Grok 模型、推理深度、Agent/Plan 会话模式和内置 Agent profile；
 - **受控 Plan 审批**：写入任务先在 OS 只读沙箱生成计划，经 Codex/用户批准后才重启到隔离 worktree 实施；
 - **默认安全隔离**：调查默认只读；写入必须经过明确授权，并且只能发生在独立 linked Git worktree 中；
@@ -65,13 +66,16 @@ codex plugin add grok-subagent@ms903-grok
 ```mermaid
 flowchart LR
     U["用户"] --> C["Codex 管理员"]
-    C --> S["Grok Subagent Skill"]
+    C --> N["原生 Luna / Terra 监控子智能体"]
+    C -. "短调用 / 兼容回退" .-> S["Grok Subagent Skill"]
+    N --> S
     S --> M["本地 MCP Bridge"]
     M --> A["官方 Grok ACP: grok agent stdio"]
     A --> R["只读项目目录"]
     A --> W["独立 Git worktree"]
     A --> X["xAI / Grok 服务"]
-    M --> C
+    M --> N
+    N --> C
     C --> V["Codex 核验与最终结果"]
 ```
 
@@ -88,7 +92,7 @@ flowchart LR
 | Codex 原生子 Agent | 集成更紧密，但通常仍属于同一平台和模型体系 |
 | **本插件：官方 Grok CLI + ACP + MCP** | 保留官方 Grok Agent 运行时，只增加一层小而透明的 Codex 控制接口 |
 
-本插件不是 Codex 原生子 Agent 的替代品。原生子 Agent 更适合同平台内的并行拆分；本插件适合需要**模型多样性**时，让 Grok 提供独立意见或隔离实现，再由 Codex 统一验收。
+本插件不是 Codex 原生子 Agent 的替代品，而是把两者组合起来：原生 Luna/Terra 子智能体承担轻量监控和进度转发，Grok 作为外部模型完成独立调查或隔离实现，主 Codex 继续编排和验收。插件 Skill 在 Codex 层创建原生监控子智能体；MCP Bridge 本身只管理 Grok ACP 进程，不冒充 Codex harness。
 
 ## 常用场景
 
@@ -179,6 +183,7 @@ Grok 内部子 Agent 默认关闭。启用时，任务参数和确认参数都�
 | `grok_plan_decide` | 批准计划、要求修改或取消；写入批准会启动隔离 Worker | 审批控制操作 |
 | `grok_command` | 运行 Grok 当前宣告且插件允许的安全 `/xxxx` 命令 | 受 allowlist 限制 |
 | `grok_config_get` / `grok_config_set` | 读取或经确认原子更新插件自己的非敏感默认值 | 插件配置文件 |
+| `grok_progress` | 为原生监控子智能体返回紧凑的公开进度增量，可长轮询最多 30 秒 | 只读 |
 | `grok_status` | 查看生命周期、运行时长、计划、最近工具活动和公开回答片段；支持按进度版本等待增量 | 只读 |
 | `grok_result` | 获取公开回答，可短暂等待当前轮次完成 | 只读 |
 | `grok_send` | 在同一会话中聚焦追问；写入会话需重新确认范围 | 继承会话模式 |
@@ -196,17 +201,22 @@ Bridge 最多同时保留三个 Grok 进程；Skill 默认建议只使用一个�
 
 ### 可见进度如何工作
 
-Grok 运行期间，Skill 会让 Codex 用 `grok_status` 做最长 30 秒的增量等待，并把有实质变化的计划步骤、工具状态、运行时长或公开回答片段转成 Codex 任务里的简短进度消息；即使没有新细节，也会在 60 秒内给出一次心跳。Bridge 不转发私有思维链，因此这里展示的是可核验的工作状态，不是模型的隐藏推理文本。
+较长的 Grok 推理、审查和搜索任务默认交给一个原生 Codex 监控子智能体：普通的启动、等待、进度转发和结果搬运使用 `gpt-5.6-luna` + low；只有需要解释复杂计划、实质性引导 Grok 或综合多个结果时才使用 `gpt-5.6-terra` + medium。用户显式指定的原生模型优先；如果当前 Codex 环境没有原生子智能体能力，Skill 自动退回主 Codex 直接轮询，不影响 Grok 任务本身。
+
+监控子智能体用 `grok_progress` 按 `revision` 做最长 30 秒的增量等待，并通过原生邮箱向主 Codex 发送启动信息、有实质变化的计划/工具/状态/公开回答片段，以及最长间隔 60 秒的心跳。主 Codex 把这些消息转成当前任务里的简短进度，同时还能继续做核验或响应用户。遇到 `action_required: "plan_approval"` 时，监控者只上报公开计划并暂停；是否批准始终由主 Codex 和用户决定。
+
+Bridge 丢弃私有思维链，只公开生命周期、耗时、计划、工具标题/状态、有限长度的公开回答片段和脱敏错误。同步的 `grok_search` 目前只能显示启动、心跳和完成，不能显示其内部搜索工具步骤。
 
 ## 要求与兼容性
 
 - macOS、Linux 或 WSL；
 - Node.js 22 或更高版本；
 - 支持插件的新版 Codex CLI/Desktop；
+- 原生 Luna/Terra 监控需要支持 Codex 子智能体协作的版本；不支持时可直接轮询回退；
 - 已安装并登录官方 Grok Build CLI；
 - 写入模式需要 Git。
 
-最近验证环境（2026-08-14）：Linux、Grok CLI `1.0.3`、插件 `0.5.0`；capability/ACP 探测发现 `grok-4.6`（默认，支持 `low/medium/high/xhigh`）和 `grok-4.5`（支持 `low/medium/high`），以及 `general-purpose`、`explore`、`plan` profile。同日已 live 验证模型/推理深度/profile 控制、安全 slash command，以及“只读 Plan → 批准 → 临时 linked worktree 写入”的完整流程。这里列出的是该次安装的结果，不是硬编码兼容清单；实际可用项以 `grok_capabilities` 和会话返回为准。插件沿用官方 CLI 支持的认证方式，不自行处理认证。
+最近验证环境（2026-08-16）：Linux、Grok CLI `1.0.3`、插件 `0.6.0`；capability 探测发现 `grok-4.6`（默认）和 `grok-4.5`。原生 Luna 子智能体已在合成目录中实际启动并监控 `grok-4.6`/low/read-only 任务、转发 revision 进度和结果，并关闭会话。0.6.0 的确定性测试覆盖新的 `grok_progress`；authenticated E2E 也已在只含合成数据的临时目录通过，并覆盖模型/推理深度/profile 控制、安全 slash command 和“只读 Plan → 批准 → 临时 linked worktree 写入”。E2E 会把所选测试目录的相关内容发送到 xAI，因此测试真实仓库前仍必须得到明确授权。这里列出的是该次安装的结果，不是硬编码兼容清单；实际可用项以 `grok_capabilities` 和会话返回为准。插件沿用官方 CLI 支持的认证方式，不自行处理认证。
 
 官方参考：[Grok Build](https://docs.x.ai/build/overview)、[ACP 与无头模式](https://docs.x.ai/build/cli/headless-scripting)、[CLI 参数](https://docs.x.ai/build/cli/reference)。
 
@@ -272,6 +282,7 @@ codex plugin add grok-subagent@ms903-grok
 - 回答文本有长度上限，避免无限占用内存；
 - 插件不会自动提交、合并、推送或删除 worktree；
 - Grok 是通过 ACP/MCP 接入的外部 Agent，不是 Codex 内部原生团队 Agent；
+- 原生监控子智能体是 Skill 编排约定，不是 MCP server 的能力；旧 Codex 版本会退回直接轮询；
 - Grok CLI、模型名和沙箱行为未来可能改变，高安全环境应固定并集中管理 Grok 版本。
 
 ## 上游与维护
