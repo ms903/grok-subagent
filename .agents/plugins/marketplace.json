@@ -1,7 +1,7 @@
 {
-  "name": "walvez-grok",
+  "name": "ms903-grok",
   "interface": {
-    "displayName": "Grok Subagent"
+    "displayName": "ms903 Grok Subagent"
   },
   "plugins": [
     {

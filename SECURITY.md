@@ -33,6 +33,8 @@ On Linux, Grok documents child-network blocking for read-only and strict profile
 
 Some sensitive directories are protected by Grok independently of these profiles, but users should not rely on deny lists as a substitute for careful scope selection.
 
+Plan mode is not a filesystem sandbox. For a writing worker, the bridge runs planning in a separate Grok process under the `read-only` sandbox. Approving the plan requires a fresh `confirm_write_scope`, terminates the planning process, and starts a new `workspace` process in the already validated linked worktree. Requesting changes or cancelling never grants workspace access.
+
 ## Prompt injection
 
 Repository files are untrusted model input. A malicious file can tell an agent to ignore instructions, expose data, or run commands. The worktree guard and sandbox reduce filesystem impact but do not prove that model output is correct or safe.
@@ -42,6 +44,14 @@ Codex should independently inspect relevant files, review every diff, and rerun 
 ## Authentication handling
 
 The bridge asks the official Grok CLI to use its advertised `cached_token` method. It never reads `~/.grok/auth.json`, prints tokens, or stores credentials. Grok child processes receive a minimal environment-variable allowlist instead of the bridge's complete environment. `XAI_API_KEY`, when present, is intentionally passed to the official CLI; additional variables require explicit opt-in through `GROK_PASSTHROUGH_ENV` and may be visible to Grok tools. The server also sanitizes common credential-shaped strings from retained errors and task prompts, but this is only a last-resort safeguard and not a complete secret scanner.
+
+## Configuration and slash-command boundary
+
+The plugin's persistent JSON contains only model/mode/profile defaults, the nested-subagent default, and a slash-command allowlist. It is written atomically with mode `0600` after `confirm_persist`; it contains no credentials and does not modify Grok's native config.
+
+An advertised Grok command is not automatically authorized. `grok_command` also requires the command to be in the plugin allowlist. Credential/session commands, global auto-approval, native config/settings, hooks, sharing/export, memory, plugin/marketplace mutation, and command-creation workflows are hard-blocked and cannot be enabled through that JSON file. A writing session additionally requires write-scope confirmation for an allowed command.
+
+Nested Grok subagents are disabled by default. Enabling them requires both `subagents_enabled: true` and `confirm_subagents: true`; nested work still inherits the parent Grok sandbox and does not expand Codex authorization.
 
 ## Dependency and process model
 
@@ -58,4 +68,3 @@ The initial prompt is passed through a mode-0600 temporary file that the Termina
 Search mode deliberately avoids launching Grok from the user's current project or Git worktree. The bridge creates a private research directory, copies only the local Grok auth file into a temporary home, and disables compatibility imports of Codex/Claude/Cursor skills, rules, agents, MCP servers, hooks, and sessions.
 
 This reduces the chance that a research task packages or inspects the active codebase. It is not a local model and does not eliminate transmission of the user query or public search results to xAI. Treat returned web, X, and Reddit content as untrusted data.
-

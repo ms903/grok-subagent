@@ -2,18 +2,38 @@
 
 import { spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { accessSync, constants, lstatSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { accessSync, chmodSync, constants, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 
-const VERSION = "0.4.0";
+const VERSION = "0.5.0";
 const MAX_AGENTS = 3;
 const MAX_RETAINED_FAILED_AGENTS = 3;
 const MAX_TEXT = 120_000;
 const MAX_STDERR = 12_000;
 const CANCEL_TIMEOUT_MS = 10_000;
+const ACTIVE_STATUSES = new Set(["running", "cancelling", "awaiting_plan_approval"]);
+const DEFAULT_SLASH_COMMANDS = ["compact", "context", "session-info", "view-plan", "tasks", "queue"];
+const HARD_BLOCKED_SLASH_COMMANDS = new Set([
+  "always-approve", "auto", "config", "settings", "login", "logout", "privacy", "share", "export",
+  "hooks-trust", "hooks-add", "hooks-remove", "hooks-untrust", "plugins", "marketplace", "remember",
+  "memory", "import-claude", "create-skill", "create-workflow", "goal", "loop"
+]);
+const PLUGIN_CONFIG_KEYS = new Set([
+  "default_model", "default_reasoning_effort", "default_session_mode", "default_agent_profile",
+  "default_subagents_enabled", "allowed_slash_commands"
+]);
+const DEFAULT_PLUGIN_CONFIG = Object.freeze({
+  schema_version: 1,
+  default_model: null,
+  default_reasoning_effort: null,
+  default_session_mode: "agent",
+  default_agent_profile: null,
+  default_subagents_enabled: false,
+  allowed_slash_commands: DEFAULT_SLASH_COMMANDS
+});
 const SUPPORTED_MCP_PROTOCOL_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
 const CHILD_ENV_KEYS = [
   "PATH", "HOME", "USER", "LOGNAME", "SHELL", "TMPDIR", "TMP", "TEMP",
@@ -36,7 +56,12 @@ const TOOL_DEFINITIONS = [
         task: { type: "string", description: "Bounded task and expected output." },
         cwd: { type: "string", description: "Absolute project directory Grok may inspect." },
         role: { type: "string", description: "Short specialist role, such as reviewer or investigator." },
-        model: { type: "string", description: "Optional Grok Build model ID. Defaults to GROK_MODEL or grok-4.5." },
+        model: { type: "string", description: "Optional Grok Build model ID. Explicit input overrides plugin and Grok defaults." },
+        reasoning_effort: { type: "string", description: "Optional reasoning effort supported by the selected model, such as low, medium, high, or xhigh." },
+        session_mode: { type: "string", enum: ["agent", "plan"], description: "Start in normal agent mode or read-only plan mode." },
+        agent_profile: { type: "string", description: "Optional named Grok agent profile discovered by grok inspect." },
+        subagents_enabled: { type: "boolean", description: "Allow Grok to spawn nested subagents. Defaults to false." },
+        confirm_subagents: { type: "boolean", description: "Must be true when enabling nested Grok subagents." },
         timeout_seconds: { type: "integer", minimum: 30, maximum: 1800, default: 600 }
       },
       required: ["task", "cwd"],
@@ -54,7 +79,12 @@ const TOOL_DEFINITIONS = [
         worktree: { type: "string", description: "Absolute path to a linked Git worktree; primary checkouts are rejected." },
         confirm_write_scope: { type: "boolean", description: "Must be true after the user explicitly authorizes Grok to edit this worktree." },
         role: { type: "string", description: "Short specialist role." },
-        model: { type: "string", description: "Optional Grok Build model ID. Defaults to GROK_MODEL or grok-4.5." },
+        model: { type: "string", description: "Optional Grok Build model ID. Explicit input overrides plugin and Grok defaults." },
+        reasoning_effort: { type: "string", description: "Optional reasoning effort supported by the selected model." },
+        session_mode: { type: "string", enum: ["agent", "plan"], description: "Agent mode writes immediately; plan mode stays read-only until grok_plan_decide approves the plan." },
+        agent_profile: { type: "string", description: "Optional named Grok agent profile discovered by grok inspect." },
+        subagents_enabled: { type: "boolean", description: "Allow nested Grok subagents inside the linked worktree." },
+        confirm_subagents: { type: "boolean", description: "Must be true when enabling nested Grok subagents." },
         timeout_seconds: { type: "integer", minimum: 30, maximum: 1800, default: 900 }
       },
       required: ["task", "worktree", "confirm_write_scope"],
@@ -73,7 +103,12 @@ const TOOL_DEFINITIONS = [
         access_mode: { type: "string", enum: ["read_only", "isolated_worktree"], description: "Read-only inspection or edits in a Grok-created linked worktree." },
         confirm_interactive_handoff: { type: "boolean", description: "Must be true after the user explicitly asks to interact directly with Grok in a separate window." },
         role: { type: "string", description: "Optional specialist role included in the handoff prompt." },
-        model: { type: "string", description: "Optional Grok Build model ID." }
+        model: { type: "string", description: "Optional Grok Build model ID." },
+        reasoning_effort: { type: "string", description: "Optional reasoning effort." },
+        session_mode: { type: "string", enum: ["agent", "plan"], description: "Initial interactive session mode." },
+        agent_profile: { type: "string", description: "Optional named Grok agent profile." },
+        subagents_enabled: { type: "boolean", description: "Allow nested Grok subagents in the interactive session." },
+        confirm_subagents: { type: "boolean", description: "Must be true when enabling nested Grok subagents." }
       },
       required: ["task", "cwd", "access_mode", "confirm_interactive_handoff"],
       additionalProperties: false
@@ -117,6 +152,96 @@ const TOOL_DEFINITIONS = [
       additionalProperties: false
     },
     annotations: readOnlyAnnotations("Show Grok search run")
+  },
+  {
+    name: "grok_capabilities",
+    description: "Inspect the installed Grok Build version, models, named agents, config sources, and Grok Subagent defaults without starting an inference turn.",
+    inputSchema: {
+      type: "object",
+      properties: { cwd: { type: "string", description: "Optional absolute project directory used for Grok discovery." } },
+      additionalProperties: false
+    },
+    annotations: { title: "Inspect Grok capabilities", readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true }
+  },
+  {
+    name: "grok_session_configure",
+    description: "Change an idle managed Grok session's model, reasoning effort, or Agent/Plan mode through ACP.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        agent_id: { type: "string" },
+        model: { type: "string" },
+        reasoning_effort: { type: "string" },
+        session_mode: { type: "string", enum: ["agent", "plan"] }
+      },
+      required: ["agent_id"],
+      additionalProperties: false
+    },
+    annotations: { title: "Configure Grok session", readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true }
+  },
+  {
+    name: "grok_plan_decide",
+    description: "Approve, request changes to, or cancel a pending Grok plan. Approving a worker plan starts a fresh write-enabled process in its linked worktree.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        agent_id: { type: "string" },
+        action: { type: "string", enum: ["approve", "request_changes", "cancel"] },
+        feedback: { type: "string", description: "Required when requesting plan changes." },
+        confirm_write_scope: { type: "boolean", description: "Required to approve a writing plan after explicit user authorization." }
+      },
+      required: ["agent_id", "action"],
+      additionalProperties: false
+    },
+    annotations: { title: "Decide Grok plan", readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true }
+  },
+  {
+    name: "grok_command",
+    description: "Run one slash command that the Grok ACP session currently advertises and the Grok Subagent allowlist permits.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        agent_id: { type: "string" },
+        command: { type: "string", description: "Command name with or without a leading slash." },
+        arguments: { type: "string", description: "Optional command arguments." },
+        timeout_seconds: { type: "integer", minimum: 30, maximum: 1800, default: 600 },
+        confirm_write_scope: { type: "boolean", description: "Required for commands in writing agents." }
+      },
+      required: ["agent_id", "command"],
+      additionalProperties: false
+    },
+    annotations: { title: "Run safe Grok command", readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true }
+  },
+  {
+    name: "grok_config_get",
+    description: "Read Grok Subagent's persistent defaults. This does not return secrets or raw Grok hook commands.",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+    annotations: readOnlyAnnotations("Read Grok Subagent config")
+  },
+  {
+    name: "grok_config_set",
+    description: "Atomically update allowlisted Grok Subagent defaults without modifying Grok's native config.toml.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        patch: {
+          type: "object",
+          properties: {
+            default_model: { type: ["string", "null"] },
+            default_reasoning_effort: { type: ["string", "null"] },
+            default_session_mode: { type: "string", enum: ["agent", "plan"] },
+            default_agent_profile: { type: ["string", "null"] },
+            default_subagents_enabled: { type: "boolean" },
+            allowed_slash_commands: { type: "array", items: { type: "string" } }
+          },
+          additionalProperties: false
+        },
+        confirm_persist: { type: "boolean", description: "Must be true after explicit user authorization." }
+      },
+      required: ["patch", "confirm_persist"],
+      additionalProperties: false
+    },
+    annotations: { title: "Update Grok Subagent config", readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false }
   },
   {
     name: "grok_status",
@@ -196,6 +321,99 @@ function clamp(value, min, max, fallback) {
   return Number.isFinite(number) ? Math.min(max, Math.max(min, Math.trunc(number))) : fallback;
 }
 
+function optionalString(value, label) {
+  if (value === undefined || value === null || value === "") return null;
+  if (typeof value !== "string" || !value.trim()) throw new Error(`${label} must be a non-empty string or null.`);
+  return value.trim();
+}
+
+function normalizeSessionMode(value, fallback = "agent") {
+  const mode = optionalString(value, "session mode") || fallback;
+  if (["agent", "normal", "default"].includes(mode)) return "agent";
+  if (mode === "plan") return "plan";
+  throw new Error("session mode must be agent or plan.");
+}
+
+function acpModeId(mode) {
+  return normalizeSessionMode(mode) === "plan" ? "plan" : "default";
+}
+
+function normalizeAgentProfile(value) {
+  const profile = optionalString(value, "agent_profile");
+  if (profile && !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(profile)) {
+    throw new Error("agent_profile must be a discovered Grok agent name, not a path or inline definition.");
+  }
+  return profile;
+}
+
+function normalizeSlashCommand(value) {
+  const command = optionalString(value, "slash command")?.replace(/^\/+/, "") || "";
+  if (!/^[A-Za-z0-9][A-Za-z0-9:_-]{0,63}$/.test(command)) throw new Error("slash command name is invalid.");
+  return command;
+}
+
+function normalizePluginConfig(value = {}) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Plugin config must be a JSON object.");
+  const commands = value.allowed_slash_commands === undefined
+    ? DEFAULT_SLASH_COMMANDS
+    : value.allowed_slash_commands;
+  if (!Array.isArray(commands)) throw new Error("allowed_slash_commands must be an array.");
+  const allowedSlashCommands = [...new Set(commands.map(normalizeSlashCommand))];
+  for (const command of allowedSlashCommands) {
+    if (HARD_BLOCKED_SLASH_COMMANDS.has(command)) throw new Error(`Slash command /${command} cannot be allowlisted.`);
+  }
+  return {
+    schema_version: 1,
+    default_model: optionalString(value.default_model, "default_model"),
+    default_reasoning_effort: optionalString(value.default_reasoning_effort, "default_reasoning_effort"),
+    default_session_mode: normalizeSessionMode(value.default_session_mode, "agent"),
+    default_agent_profile: normalizeAgentProfile(value.default_agent_profile),
+    default_subagents_enabled: value.default_subagents_enabled === true,
+    allowed_slash_commands: allowedSlashCommands
+  };
+}
+
+function pluginConfigPath(source = process.env) {
+  if (source.GROK_SUBAGENT_CONFIG_FILE) {
+    if (!isAbsolute(source.GROK_SUBAGENT_CONFIG_FILE)) throw new Error("GROK_SUBAGENT_CONFIG_FILE must be absolute.");
+    return resolve(source.GROK_SUBAGENT_CONFIG_FILE);
+  }
+  const base = source.XDG_CONFIG_HOME ? resolve(source.XDG_CONFIG_HOME) : join(homedir(), ".config");
+  return join(base, "grok-subagent", "config.json");
+}
+
+function readPluginConfig(source = process.env) {
+  const path = pluginConfigPath(source);
+  try {
+    return { path, exists: true, config: normalizePluginConfig(JSON.parse(readFileSync(path, "utf8"))) };
+  } catch (error) {
+    if (error?.code === "ENOENT") return { path, exists: false, config: normalizePluginConfig(DEFAULT_PLUGIN_CONFIG) };
+    throw new Error(`Could not read Grok Subagent config: ${cleanText(error?.message || error)}`);
+  }
+}
+
+function writePluginConfig(patch, confirmPersist, source = process.env) {
+  if (confirmPersist !== true) throw new Error("confirm_persist must be true after explicit user authorization.");
+  if (!patch || typeof patch !== "object" || Array.isArray(patch)) throw new Error("patch must be an object.");
+  for (const key of Object.keys(patch)) {
+    if (!PLUGIN_CONFIG_KEYS.has(key)) throw new Error(`Unsupported plugin config key: ${key}`);
+  }
+  const current = readPluginConfig(source);
+  const config = normalizePluginConfig({ ...current.config, ...patch });
+  const directory = dirname(current.path);
+  mkdirSync(directory, { recursive: true, mode: 0o700 });
+  const temporary = join(directory, `.config-${randomUUID()}.tmp`);
+  try {
+    writeFileSync(temporary, JSON.stringify(config, null, 2) + "\n", { encoding: "utf8", mode: 0o600 });
+    renameSync(temporary, current.path);
+    chmodSync(current.path, 0o600);
+  } catch (error) {
+    rmSync(temporary, { force: true });
+    throw error;
+  }
+  return { path: current.path, exists: true, config };
+}
+
 function cleanText(value) {
   return String(value ?? "")
     .replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, "[REDACTED PRIVATE KEY]")
@@ -271,6 +489,54 @@ function findGrok() {
   throw new Error("Grok CLI was not found. Install and authenticate Grok Build first.");
 }
 
+function runGrokJson(binary, args, cwd, timeout = 30_000) {
+  const result = spawnSync(binary, args, { cwd, encoding: "utf8", timeout, env: buildChildEnv(), maxBuffer: 8 * 1024 * 1024 });
+  if (result.error) throw result.error;
+  if (result.status !== 0) throw new Error(cleanText(result.stderr || result.stdout || `grok ${args[0]} exited with ${result.status}`));
+  try { return JSON.parse(result.stdout); }
+  catch { throw new Error(`grok ${args[0]} did not return valid JSON.`); }
+}
+
+function parseModelsOutput(output) {
+  const defaultModel = String(output).match(/^Default model:\s*(\S+)/m)?.[1] || null;
+  const models = [...String(output).matchAll(/^\s*[*-]\s+(\S+?)(?:\s+\(default\))?\s*$/gm)].map(match => match[1]);
+  return { default_model: defaultModel, available_models: [...new Set(models)] };
+}
+
+function getGrokCapabilities(args = {}) {
+  const cwd = args.cwd ? absoluteDirectory(args.cwd, "cwd") : realpathSync(process.cwd());
+  const binary = findGrok();
+  const versionProbe = spawnSync(binary, ["--version"], { cwd, encoding: "utf8", timeout: 5_000, env: buildChildEnv() });
+  const modelsProbe = spawnSync(binary, ["models"], { cwd, encoding: "utf8", timeout: 30_000, env: buildChildEnv() });
+  if (modelsProbe.status !== 0) throw new Error(cleanText(modelsProbe.stderr || modelsProbe.stdout || "Could not list Grok models."));
+  const inspect = runGrokJson(binary, ["inspect", "--json"], cwd);
+  const models = parseModelsOutput(modelsProbe.stdout);
+  return {
+    grok_version: cleanText(versionProbe.stdout || versionProbe.stderr).trim(),
+    cwd,
+    ...models,
+    agents: (inspect.agents || []).slice(0, 100).map(agent => ({
+      name: cleanText(agent.name),
+      description: cleanText(agent.description || ""),
+      source: cleanText(agent.source?.type || "unknown")
+    })),
+    config_sources: (inspect.configSources?.layers || []).map(layer => ({ role: cleanText(layer.role), path: cleanText(layer.path) })),
+    supported_session_modes: ["agent", "plan"],
+    plugin_config: readPluginConfig()
+  };
+}
+
+function buildManagedAgentArgs({ sandbox, model, reasoningEffort, agentProfile, subagentsEnabled }) {
+  const args = ["--no-auto-update", "--sandbox", sandbox];
+  if (agentProfile) args.push("--agent", agentProfile);
+  if (!subagentsEnabled) args.push("--no-subagents");
+  args.push("agent");
+  if (model) args.push("--model", model);
+  if (reasoningEffort) args.push("--reasoning-effort", reasoningEffort);
+  args.push("--always-approve", "--no-leader", "stdio");
+  return args;
+}
+
 function shellQuote(value) {
   return `'${String(value).replaceAll("'", `'"'"'`)}'`;
 }
@@ -284,13 +550,16 @@ function interactiveWorktreeName() {
   return `grok-handoff-${stamp}-${randomUUID().slice(0, 6)}`;
 }
 
-function buildInteractiveCommand({ binary, cwd, promptFile, promptDir, accessMode, model, worktreeName }) {
-  const args = [shellQuote(binary), "--no-subagents"];
+function buildInteractiveCommand({ binary, cwd, promptFile, promptDir, accessMode, model, reasoningEffort, sessionMode, agentProfile, subagentsEnabled, worktreeName }) {
+  const args = [shellQuote(binary)];
+  if (agentProfile) args.push("--agent", shellQuote(agentProfile));
+  if (!subagentsEnabled) args.push("--no-subagents");
   if (model) args.push("--model", shellQuote(model));
+  if (reasoningEffort) args.push("--reasoning-effort", shellQuote(reasoningEffort));
   if (accessMode === "read_only") {
-    args.push("--sandbox", "read-only", "--permission-mode", "default");
+    args.push("--sandbox", "read-only", "--permission-mode", sessionMode === "plan" ? "plan" : "default");
   } else {
-    args.push(`--worktree=${shellQuote(worktreeName)}`, "--sandbox", "workspace", "--permission-mode", "acceptEdits");
+    args.push(`--worktree=${shellQuote(worktreeName)}`, "--sandbox", "workspace", "--permission-mode", sessionMode === "plan" ? "plan" : "acceptEdits");
   }
   args.push('--', '"$grok_handoff_prompt"');
   return [
@@ -308,13 +577,20 @@ function launchInteractiveHandoff(args) {
   if (typeof args.task !== "string" || !args.task.trim()) throw new Error("task is required.");
   if (args.task.length > MAX_TEXT) throw new Error(`task must be at most ${MAX_TEXT} characters.`);
   if (!["read_only", "isolated_worktree"].includes(args.access_mode)) throw new Error("access_mode must be read_only or isolated_worktree.");
+  const config = readPluginConfig().config;
+  const sessionMode = normalizeSessionMode(args.session_mode, config.default_session_mode);
+  const agentProfile = normalizeAgentProfile(args.agent_profile ?? config.default_agent_profile);
+  const subagentsEnabled = args.subagents_enabled ?? config.default_subagents_enabled;
+  if (subagentsEnabled && args.confirm_subagents !== true) {
+    throw new Error("confirm_subagents must be true when enabling nested Grok subagents.");
+  }
   const cwd = args.access_mode === "isolated_worktree" ? assertGitRepositoryRoot(args.cwd) : absoluteDirectory(args.cwd, "cwd");
   const binary = findGrok();
   const worktreeName = args.access_mode === "isolated_worktree" ? interactiveWorktreeName() : null;
   const rules = [
     `Codex has handed this task to you as an interactive ${cleanText(args.role || "Grok Build specialist")}.`,
     "Work directly with the user in this Terminal window. Ask the user when a material decision or additional authority is required.",
-    "Do not spawn subagents.",
+    subagentsEnabled ? "Keep any nested subagent fan-out bounded and report it." : "Do not spawn subagents.",
     args.access_mode === "read_only"
       ? "This is a read-only session. Do not modify project files."
       : "Work only in the isolated worktree created for this session. Do not commit, push, merge, publish, or alter other worktrees unless the user explicitly authorizes that action in this window.",
@@ -326,7 +602,19 @@ function launchInteractiveHandoff(args) {
   const promptDir = mkdtempSync(join(tmpdir(), "grok-handoff-"));
   const promptFile = join(promptDir, "prompt.txt");
   writeFileSync(promptFile, rules, { encoding: "utf8", mode: 0o600 });
-  const command = buildInteractiveCommand({ binary, cwd, promptFile, promptDir, accessMode: args.access_mode, model: args.model, worktreeName });
+  const command = buildInteractiveCommand({
+    binary,
+    cwd,
+    promptFile,
+    promptDir,
+    accessMode: args.access_mode,
+    model: args.model ?? config.default_model,
+    reasoningEffort: args.reasoning_effort ?? config.default_reasoning_effort,
+    sessionMode,
+    agentProfile,
+    subagentsEnabled,
+    worktreeName
+  });
   const script = `tell application "Terminal"\nactivate\ndo script "${appleScriptString(command)}"\nend tell`;
   const launched = spawnSync("osascript", ["-e", script], { encoding: "utf8", timeout: 10_000, env: buildChildEnv() });
   if (launched.status !== 0) {
@@ -346,18 +634,29 @@ function launchInteractiveHandoff(args) {
 }
 
 class GrokAgent {
-  constructor({ cwd, mode, role, model, timeoutSeconds }) {
+  constructor({ cwd, mode, role, model, reasoningEffort, sessionMode, agentProfile, subagentsEnabled, timeoutSeconds, originalTask }) {
     this.id = randomUUID();
     this.cwd = cwd;
     this.mode = mode;
     this.role = cleanText(role || (mode === "readonly" ? "independent investigator" : "isolated implementation worker"));
-    this.model = model || process.env.GROK_MODEL || "grok-4.5";
+    this.model = model || null;
+    this.reasoningEffort = reasoningEffort || null;
+    this.sessionMode = normalizeSessionMode(sessionMode);
+    this.agentProfile = normalizeAgentProfile(agentProfile);
+    this.subagentsEnabled = subagentsEnabled === true;
     this.timeoutSeconds = timeoutSeconds;
+    this.originalTask = cleanText(originalTask || "");
+    this.runtimeMode = mode === "worker" && this.sessionMode === "plan" ? "readonly" : mode;
+    this.phase = this.sessionMode === "plan" ? "planning" : "agent";
     this.status = "starting";
     this.sessionId = null;
     this.text = "";
     this.stderr = "";
     this.plan = null;
+    this.planApproval = null;
+    this.approvedPlan = null;
+    this.availableModels = [];
+    this.availableCommands = [];
     this.toolEvents = [];
     this.error = null;
     this.startedAt = new Date().toISOString();
@@ -368,19 +667,37 @@ class GrokAgent {
     this.turnPromise = null;
     this.cancelTimer = null;
     this.closed = false;
+    this.proc = null;
   }
 
   async start() {
+    await this.startProcess();
+  }
+
+  async startProcess() {
     const binary = findGrok();
-    const sandbox = this.mode === "readonly" ? "read-only" : "workspace";
-    const args = ["--no-auto-update", "--sandbox", sandbox, "agent", "--model", this.model, "--always-approve", "--no-leader", "stdio"];
-    this.proc = spawn(binary, args, { cwd: this.cwd, stdio: ["pipe", "pipe", "pipe"], env: buildChildEnv() });
-    this.proc.stderr.setEncoding("utf8");
-    this.proc.stderr.on("data", chunk => { this.stderr = appendBounded(this.stderr, chunk, MAX_STDERR); });
-    this.proc.on("exit", (code, signal) => this.onExit(code, signal));
-    this.proc.on("error", error => this.fail(error));
-    const lines = createInterface({ input: this.proc.stdout });
-    lines.on("line", line => this.onLine(line));
+    const sandbox = this.runtimeMode === "readonly" ? "read-only" : "workspace";
+    const args = buildManagedAgentArgs({
+      sandbox,
+      model: this.model,
+      reasoningEffort: this.reasoningEffort,
+      agentProfile: this.agentProfile,
+      subagentsEnabled: this.subagentsEnabled
+    });
+    this.status = "starting";
+    this.stderr = "";
+    const proc = spawn(binary, args, { cwd: this.cwd, stdio: ["pipe", "pipe", "pipe"], env: buildChildEnv() });
+    this.proc = proc;
+    proc.stderr.setEncoding("utf8");
+    proc.stderr.on("data", chunk => {
+      if (proc === this.proc) this.stderr = appendBounded(this.stderr, chunk, MAX_STDERR);
+    });
+    proc.on("exit", (code, signal) => this.onExit(proc, code, signal));
+    proc.on("error", error => {
+      if (proc === this.proc) this.fail(error);
+    });
+    const lines = createInterface({ input: proc.stdout });
+    lines.on("line", line => this.onLine(proc, line));
 
     const initialized = await this.request("initialize", { protocolVersion: 1, clientCapabilities: {} }, 30_000);
     const methods = initialized?.authMethods || [];
@@ -389,17 +706,42 @@ class GrokAgent {
     }
     const rules = [
       `You are acting as a ${this.role} under Codex orchestration.`,
-      "Do not spawn or delegate to other agents.",
+      this.subagentsEnabled
+        ? "Nested Grok subagents are authorized for this task. Keep fan-out bounded and report their work."
+        : "Do not spawn or delegate to other agents.",
       "Do not expose private chain-of-thought; provide concise conclusions and verifiable evidence.",
-      this.mode === "readonly"
-        ? "This session is read-only. Do not attempt to modify project files."
+      this.runtimeMode === "readonly"
+        ? (this.phase === "planning"
+          ? "This is a read-only planning phase. Inspect the project, produce a concrete plan, and request plan approval. Do not modify project files."
+          : "This session is read-only. Do not attempt to modify project files.")
         : "Modify only the requested files inside this isolated linked worktree. Do not commit, push, merge, or alter other worktrees."
     ].join("\n");
     const session = await this.request("session/new", { cwd: this.cwd, mcpServers: [], _meta: { rules } }, 30_000);
     if (!session?.sessionId) throw new Error("Grok ACP did not return a sessionId.");
     this.sessionId = session.sessionId;
+    this.applySessionDescriptor(session);
+    if (this.sessionMode === "plan") await this.setSessionMode("plan");
     this.status = "idle";
     this.touch();
+  }
+
+  applySessionDescriptor(session) {
+    const models = Array.isArray(session.models?.availableModels) ? session.models.availableModels : [];
+    this.availableModels = models.slice(0, 100).map(model => ({
+      model_id: cleanText(model.modelId),
+      name: cleanText(model.name || model.modelId),
+      description: cleanText(model.description || ""),
+      default_reasoning_effort: cleanText(model._meta?.reasoningEffort || "") || null,
+      reasoning_efforts: (model._meta?.reasoningEfforts || []).slice(0, 20).map(effort => ({
+        id: cleanText(effort.id || effort.value),
+        label: cleanText(effort.label || effort.id || effort.value),
+        description: cleanText(effort.description || "")
+      }))
+    }));
+    const currentModelId = optionalString(session.models?.currentModelId, "current model") || this.model;
+    if (currentModelId) this.model = currentModelId;
+    const current = models.find(model => model.modelId === currentModelId);
+    if (!this.reasoningEffort && current?._meta?.reasoningEffort) this.reasoningEffort = cleanText(current._meta.reasoningEffort);
   }
 
   request(method, params, timeoutMs = 60_000) {
@@ -416,10 +758,12 @@ class GrokAgent {
   }
 
   write(message) {
+    if (!this.proc?.stdin?.writable) throw new Error("Grok process is not writable.");
     this.proc.stdin.write(JSON.stringify(message) + "\n");
   }
 
-  onLine(line) {
+  onLine(proc, line) {
+    if (proc !== this.proc) return;
     let message;
     try { message = JSON.parse(line); } catch { return; }
     if (Object.hasOwn(message, "id") && (Object.hasOwn(message, "result") || Object.hasOwn(message, "error"))) {
@@ -439,8 +783,24 @@ class GrokAgent {
   }
 
   handleAgentRequest(message) {
+    const kind = message.params?.toolCall?.kind;
+    if (message.method.includes("exit_plan_mode") || kind === "switch_mode") {
+      const content = message.params?.planContent
+        || message.params?.toolCall?.content?.map(item => item?.content?.text || item?.text || "").join("\n")
+        || JSON.stringify(this.plan || []);
+      this.planApproval = {
+        id: message.id,
+        method: message.method,
+        params: message.params || {},
+        plan_content: cleanText(content).slice(0, MAX_TEXT),
+        received_at: new Date().toISOString()
+      };
+      this.status = "awaiting_plan_approval";
+      this.touch();
+      return;
+    }
     const options = message.params?.options || [];
-    const allowed = options.find(option => ["allow_once", "allow", "approved"].includes(option.kind));
+    const allowed = options.find(option => ["allow_once", "allow", "allow_always", "approved"].includes(option.kind));
     if (message.method.includes("permission") && allowed) {
       this.write({ jsonrpc: "2.0", id: message.id, result: { outcome: { outcome: "selected", optionId: allowed.optionId } } });
     } else {
@@ -456,6 +816,16 @@ class GrokAgent {
     } else if (update.sessionUpdate === "plan") {
       this.touch();
       this.plan = sanitizePlan(update);
+    } else if (update.sessionUpdate === "current_mode_update") {
+      this.sessionMode = update.currentModeId === "plan" ? "plan" : "agent";
+      this.touch();
+    } else if (update.sessionUpdate === "available_commands_update") {
+      this.availableCommands = (update.availableCommands || []).slice(0, 200).map(command => ({
+        name: cleanText(command.name || ""),
+        description: cleanText(command.description || ""),
+        input_hint: cleanText(command.input?.hint || "")
+      })).filter(command => command.name);
+      this.touch();
     } else if (update.sessionUpdate === "tool_call" || update.sessionUpdate === "tool_call_update") {
       this.touch();
       this.toolEvents.push({
@@ -469,8 +839,54 @@ class GrokAgent {
     }
   }
 
+  async setSessionMode(mode) {
+    const normalized = normalizeSessionMode(mode);
+    await this.request("session/set_mode", { sessionId: this.sessionId, modeId: acpModeId(normalized) }, 30_000);
+    this.sessionMode = normalized;
+    this.touch();
+  }
+
+  async configure(args = {}) {
+    if (!["idle", "completed"].includes(this.status)) throw new Error(`Agent is ${this.status}; configure it only between turns.`);
+    if (args.model === undefined && args.reasoning_effort === undefined && args.session_mode === undefined) {
+      throw new Error("Provide model, reasoning_effort, or session_mode.");
+    }
+    if (args.model !== undefined || args.reasoning_effort !== undefined) {
+      const model = optionalString(args.model, "model") || this.model;
+      if (!model) throw new Error("A model is required before changing reasoning effort.");
+      const descriptor = this.availableModels.find(item => item.model_id === model);
+      if (this.availableModels.length && !descriptor) {
+        throw new Error(`Model ${model} is not advertised by this Grok session.`);
+      }
+      const modelChanged = args.model !== undefined && model !== this.model;
+      const effort = optionalString(args.reasoning_effort, "reasoning_effort")
+        || (modelChanged ? descriptor?.default_reasoning_effort : this.reasoningEffort);
+      if (effort && descriptor?.reasoning_efforts?.length && !descriptor.reasoning_efforts.some(item => item.id === effort)) {
+        throw new Error(`Reasoning effort ${effort} is not supported by model ${model}.`);
+      }
+      const result = await this.request("session/set_model", {
+        sessionId: this.sessionId,
+        modelId: model,
+        ...(effort ? { _meta: { reasoningEffort: effort } } : {})
+      }, 30_000);
+      if (result?._meta?.model?.Err) throw new Error(cleanText(result._meta.model.Err));
+      this.model = cleanText(result?._meta?.model?.Ok || model);
+      this.reasoningEffort = effort || null;
+      this.touch();
+    }
+    if (args.session_mode !== undefined) {
+      const nextMode = normalizeSessionMode(args.session_mode);
+      if (this.mode === "worker" && this.runtimeMode === "worker" && nextMode === "plan") {
+        throw new Error("A write-enabled worker cannot switch into a falsely read-only Plan mode. Start a new worker with session_mode=plan.");
+      }
+      await this.setSessionMode(nextMode);
+      this.phase = nextMode === "plan" ? "planning" : "agent";
+    }
+    return this.summary(false);
+  }
+
   runTurn(prompt, timeoutSeconds = this.timeoutSeconds) {
-    if (this.status !== "idle" && this.status !== "completed") throw new Error(`Agent is ${this.status}; wait for the current turn to settle or close it before sending another prompt.`);
+    if (!["idle", "completed"].includes(this.status)) throw new Error(`Agent is ${this.status}; wait for the current turn to settle or close it before sending another prompt.`);
     this.status = "running";
     this.error = null;
     this.touch();
@@ -480,6 +896,7 @@ class GrokAgent {
       prompt: [{ type: "text", text: cleanText(prompt) }]
     }, boundedTimeout).then(result => {
       this.clearCancelTimer();
+      if (result?._meta?.modelId) this.model = cleanText(result._meta.modelId);
       this.status = this.status === "cancelling" ? "idle" : "completed";
       this.touch();
       return result;
@@ -501,8 +918,105 @@ class GrokAgent {
     return turn;
   }
 
+  respondToPlanRequest(approval, action) {
+    if (approval.method.includes("exit_plan_mode")) {
+      this.write({ jsonrpc: "2.0", id: approval.id, result: { outcome: "approved" } });
+      return;
+    }
+    const options = approval.params?.options || [];
+    const preferredKinds = action === "approve"
+      ? ["allow_once", "allow", "allow_always", "approved"]
+      : ["reject_once", "reject", "cancelled"];
+    const selected = options.find(option => preferredKinds.includes(option.kind));
+    if (!selected) throw new Error(`Grok did not provide a compatible plan ${action} option.`);
+    this.write({ jsonrpc: "2.0", id: approval.id, result: { outcome: { outcome: "selected", optionId: selected.optionId } } });
+  }
+
+  async decidePlan(args) {
+    const action = args.action;
+    if (!["approve", "request_changes", "cancel"].includes(action)) throw new Error("Invalid plan action.");
+    if (!this.planApproval) throw new Error("This Grok agent has no pending plan approval.");
+    const feedback = optionalString(args.feedback, "feedback");
+    if (action === "request_changes" && !feedback) throw new Error("feedback is required when requesting plan changes.");
+    if (action === "approve" && this.mode === "worker" && args.confirm_write_scope !== true) {
+      throw new Error("confirm_write_scope must be true to approve a writing plan.");
+    }
+    const approval = this.planApproval;
+    const currentTurn = this.turnPromise;
+    this.planApproval = null;
+    this.status = "running";
+    this.touch();
+    this.respondToPlanRequest(approval, action);
+    if (currentTurn) await currentTurn;
+
+    if (action === "request_changes") {
+      await this.setSessionMode("plan");
+      this.phase = "planning";
+      this.runTurn(`Do not implement yet. Stay in plan mode and revise the plan based on this feedback:\n\n${feedback}`);
+      return this.summary(false);
+    }
+    if (action === "cancel") {
+      await this.setSessionMode("agent");
+      this.phase = "cancelled";
+      this.status = "completed";
+      this.touch();
+      return this.summary(false);
+    }
+
+    await this.setSessionMode("agent");
+    this.phase = "agent";
+    if (this.mode === "worker" && this.runtimeMode === "readonly") {
+      this.approvedPlan = approval.plan_content || JSON.stringify(this.plan || []);
+      await this.restartAsWorker();
+      const implementationPrompt = [
+        "Implement the approved plan in this isolated linked worktree.",
+        "Do not commit, push, merge, or alter other worktrees.",
+        "",
+        "Original task:",
+        this.originalTask,
+        "",
+        "Approved plan:",
+        this.approvedPlan
+      ].join("\n");
+      this.runTurn(implementationPrompt);
+    }
+    return this.summary(false);
+  }
+
+  async restartAsWorker() {
+    const previous = this.proc;
+    this.proc = null;
+    this.sessionId = null;
+    this.availableCommands = [];
+    this.planApproval = null;
+    this.runtimeMode = "worker";
+    this.sessionMode = "agent";
+    this.phase = "implementing";
+    this.terminateProcess(previous);
+    await this.startProcess();
+  }
+
+  runSlashCommand(args) {
+    const command = normalizeSlashCommand(args.command);
+    const config = readPluginConfig().config;
+    if (HARD_BLOCKED_SLASH_COMMANDS.has(command)) throw new Error(`Slash command /${command} is blocked by policy.`);
+    if (!config.allowed_slash_commands.includes(command)) throw new Error(`Slash command /${command} is not in allowed_slash_commands.`);
+    if (!this.availableCommands.some(item => item.name === command)) throw new Error(`Grok did not advertise slash command /${command} for this session.`);
+    if (this.mode === "worker" && this.runtimeMode === "worker" && args.confirm_write_scope !== true) {
+      throw new Error("confirm_write_scope must be true for commands in writing agents.");
+    }
+    const commandArgs = optionalString(args.arguments, "arguments");
+    if (commandArgs && commandArgs.length > 20_000) throw new Error("arguments must be at most 20,000 characters.");
+    this.runTurn(`/${command}${commandArgs ? ` ${cleanText(commandArgs)}` : ""}`, clamp(args.timeout_seconds, 30, 1800, 600));
+    return this.summary(false);
+  }
+
   cancel() {
-    if (!this.sessionId || this.closed || this.status !== "running") return false;
+    if (!this.sessionId || this.closed || !["running", "awaiting_plan_approval"].includes(this.status)) return false;
+    if (this.planApproval) {
+      try { this.respondToPlanRequest(this.planApproval, "cancel"); } catch {}
+      this.planApproval = null;
+    }
     this.write({ jsonrpc: "2.0", method: "session/cancel", params: { sessionId: this.sessionId } });
     this.status = "cancelling";
     this.touch();
@@ -519,11 +1033,11 @@ class GrokAgent {
     this.cancelTimer = null;
   }
 
-  terminateProcess() {
-    if (!this.proc || this.proc.killed || this.proc.exitCode !== null || this.proc.signalCode !== null) return;
-    this.proc.kill("SIGTERM");
+  terminateProcess(proc = this.proc) {
+    if (!proc || proc.killed || proc.exitCode !== null || proc.signalCode !== null) return;
+    proc.kill("SIGTERM");
     setTimeout(() => {
-      if (this.proc?.exitCode === null && this.proc?.signalCode === null) this.proc.kill("SIGKILL");
+      if (proc.exitCode === null && proc.signalCode === null) proc.kill("SIGKILL");
     }, 1500).unref();
   }
 
@@ -541,8 +1055,8 @@ class GrokAgent {
     this.terminateProcess();
   }
 
-  onExit(code, signal) {
-    if (this.closed || this.status === "failed") return;
+  onExit(proc, code, signal) {
+    if (proc !== this.proc || this.closed || this.status === "failed") return;
     const reason = `Grok process exited (${signal || code}).`;
     this.fail(new Error(reason));
   }
@@ -568,18 +1082,34 @@ class GrokAgent {
   }
 
   summary(includeText = false) {
+    const allowed = new Set(readPluginConfig().config.allowed_slash_commands);
     const result = {
       agent_id: this.id,
       status: this.status,
+      phase: this.phase,
       mode: this.mode,
+      runtime_access: this.runtimeMode,
+      session_mode: this.sessionMode,
       role: this.role,
       model: this.model,
+      reasoning_effort: this.reasoningEffort,
+      agent_profile: this.agentProfile,
+      subagents_enabled: this.subagentsEnabled,
       cwd: this.cwd,
       started_at: this.startedAt,
       updated_at: this.updatedAt,
       elapsed_seconds: Math.max(0, Math.trunc((Date.now() - Date.parse(this.startedAt)) / 1000)),
       revision: this.revision,
       plan: this.plan,
+      pending_plan_approval: this.planApproval ? {
+        received_at: this.planApproval.received_at,
+        plan_content: this.planApproval.plan_content
+      } : null,
+      available_models: this.availableModels,
+      available_commands: this.availableCommands.map(command => ({
+        ...command,
+        allowed: allowed.has(command.name) && !HARD_BLOCKED_SLASH_COMMANDS.has(command.name)
+      })),
       recent_tools: this.toolEvents,
       error: this.error
     };
@@ -610,12 +1140,22 @@ async function spawnAgent(args, mode) {
   if (activeAgents.length >= MAX_AGENTS) throw new Error(`At most ${MAX_AGENTS} Grok agents may be open. Close one first.`);
   if (typeof args.task !== "string" || !args.task.trim()) throw new Error("task is required.");
   if (mode === "worker" && args.confirm_write_scope !== true) throw new Error("confirm_write_scope must be true after explicit user authorization.");
+  const config = readPluginConfig().config;
+  const subagentsEnabled = args.subagents_enabled ?? config.default_subagents_enabled;
+  if (subagentsEnabled && args.confirm_subagents !== true) {
+    throw new Error("confirm_subagents must be true when enabling nested Grok subagents.");
+  }
   const cwd = mode === "readonly" ? absoluteDirectory(args.cwd, "cwd") : assertLinkedWorktree(args.worktree);
   const agent = new GrokAgent({
     cwd,
     mode,
     role: args.role,
-    model: args.model,
+    model: args.model ?? config.default_model ?? process.env.GROK_MODEL ?? null,
+    reasoningEffort: args.reasoning_effort ?? config.default_reasoning_effort,
+    sessionMode: args.session_mode ?? config.default_session_mode,
+    agentProfile: args.agent_profile ?? config.default_agent_profile,
+    subagentsEnabled,
+    originalTask: args.task,
     timeoutSeconds: clamp(args.timeout_seconds, 30, 1800, mode === "readonly" ? 600 : 900)
   });
   agents.set(agent.id, agent);
@@ -643,7 +1183,7 @@ function pruneFailedAgents() {
 
 async function waitForAgent(agent, seconds) {
   const deadline = Date.now() + clamp(seconds, 0, 30, 0) * 1000;
-  while (["running", "cancelling"].includes(agent.status) && Date.now() < deadline) {
+  while (ACTIVE_STATUSES.has(agent.status) && Date.now() < deadline) {
     await new Promise(resolvePromise => setTimeout(resolvePromise, 200));
   }
 }
@@ -651,7 +1191,7 @@ async function waitForAgent(agent, seconds) {
 async function waitForRevision(agent, afterRevision, seconds) {
   if (!Number.isInteger(afterRevision) || afterRevision < 0) return;
   const deadline = Date.now() + clamp(seconds, 0, 30, 0) * 1000;
-  while (agent.revision <= afterRevision && ["running", "cancelling"].includes(agent.status) && Date.now() < deadline) {
+  while (agent.revision <= afterRevision && ACTIVE_STATUSES.has(agent.status) && Date.now() < deadline) {
     await new Promise(resolvePromise => setTimeout(resolvePromise, 200));
   }
 }
@@ -736,6 +1276,12 @@ async function callTool(name, args = {}) {
     case "grok_search": return callSearch(args);
     case "grok_search_list": return listSearchRuns();
     case "grok_search_show": return showSearchRun(args);
+    case "grok_capabilities": return getGrokCapabilities(args);
+    case "grok_config_get": return readPluginConfig();
+    case "grok_config_set": return writePluginConfig(args.patch, args.confirm_persist);
+    case "grok_session_configure": return getAgent(args.agent_id).configure(args);
+    case "grok_plan_decide": return getAgent(args.agent_id).decidePlan(args);
+    case "grok_command": return getAgent(args.agent_id).runSlashCommand(args);
     case "grok_status": {
       const agent = getAgent(args.agent_id);
       await waitForRevision(agent, args.after_revision, args.wait_seconds);
@@ -831,17 +1377,23 @@ export {
   appleScriptString,
   assertLinkedWorktree,
   assertGitRepositoryRoot,
+  buildManagedAgentArgs,
   buildInteractiveCommand,
   buildChildEnv,
   callSearch,
   cleanText,
   listSearchRuns,
   negotiateProtocolVersion,
+  normalizePluginConfig,
+  normalizeSessionMode,
+  pluginConfigPath,
+  readPluginConfig,
   searchScriptPath,
   showSearchRun,
   shutdown,
   startMcpServer,
-  waitForRevision
+  waitForRevision,
+  writePluginConfig
 };
 
 let isMainModule = false;

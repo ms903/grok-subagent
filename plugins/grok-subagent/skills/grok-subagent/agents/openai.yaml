@@ -1,11 +1,11 @@
 interface:
   display_name: "Grok Subagent"
-  short_description: "Delegate coding and Grok-native X/web research to Grok agents"
-  default_prompt: "Use $grok-subagent to ask Grok for an independent read-only investigation or real-time X/web search."
+  short_description: "Control Grok models, modes, plans, agents, and search"
+  default_prompt: "Use $grok-subagent to run Grok with explicit model, effort, Agent/Plan, profile, and safety controls, then verify its result."
 dependencies:
   tools:
     - type: "mcp"
       value: "grok-subagent"
-      description: "Local bridge to authenticated Grok Build ACP agents and isolated Grok search"
+      description: "Local bridge for authenticated Grok Build ACP control and isolated Grok search"
 policy:
   allow_implicit_invocation: true

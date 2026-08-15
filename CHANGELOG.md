@@ -2,6 +2,27 @@
 
 All notable changes to this project will be documented here.
 
+## 0.5.0 - 2026-08-14
+
+### Added
+
+- Added per-agent model, reasoning-effort, Agent/Plan mode, named agent-profile, and nested-subagent controls.
+- Added `grok_capabilities`, `grok_session_configure`, `grok_plan_decide`, and allowlisted `grok_command` MCP tools.
+- Added explicit non-secret plugin defaults through `grok_config_get` and `grok_config_set`.
+- Added model/effort/mode/profile controls to interactive handoff.
+
+### Security
+
+- Writing Plan sessions now plan in a separate OS-enforced read-only process and start a workspace process only after explicit approval and renewed write-scope confirmation.
+- Nested Grok subagents default to disabled and require a second explicit confirmation to enable.
+- Persistent plugin configuration uses a strict schema, atomic replacement, and mode `0600`, and never edits Grok's native config.
+- Slash commands require both ACP advertisement and a local allowlist; commands affecting credentials, approval policy, hooks, sharing, memory, plugins, or native settings are permanently blocked.
+
+### Changed
+
+- Changed the fork marketplace ID to `ms903-grok` while retaining the `grok-subagent` plugin name.
+- Updated package and plugin metadata for the `ms903/grok-subagent` fork.
+
 ## 0.4.0 - 2026-08-03
 
 ### Added
