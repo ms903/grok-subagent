@@ -62,15 +62,18 @@ try {
   agentId = started.agent_id;
   assert(Number.isInteger(started.revision));
 
-  const progress = await client.call("grok_status", {
+  const progress = await client.call("grok_progress", {
     agent_id: agentId,
     after_revision: started.revision,
     wait_seconds: 30
   });
   assert(Number.isInteger(progress.revision));
   assert(progress.revision >= started.revision);
+  assert.equal(typeof progress.changed, "boolean");
   assert.equal(typeof progress.elapsed_seconds, "number");
   assert.equal(typeof progress.public_response_preview, "string");
+  assert(Array.isArray(progress.recent_tools));
+  assert([null, "plan_approval", "inspect_error"].includes(progress.action_required));
 
   let result;
   for (let attempt = 0; attempt < 8; attempt += 1) {

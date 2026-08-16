@@ -16,6 +16,7 @@ import {
   cleanText,
   negotiateProtocolVersion,
   normalizePluginConfig,
+  progressSnapshot,
   readPluginConfig,
   searchScriptPath,
   waitForRevision,
@@ -111,6 +112,9 @@ test("tool annotations reflect process and writing side effects", () => {
   assert.equal(byName.grok_handoff_interactive.annotations.destructiveHint, true);
   assert.equal(byName.grok_close.annotations.idempotentHint, false);
   assert(byName.grok_send.inputSchema.properties.confirm_write_scope);
+  assert.equal(byName.grok_progress.annotations.readOnlyHint, true);
+  assert(byName.grok_progress.inputSchema.properties.after_revision);
+  assert.equal(byName.grok_progress.inputSchema.properties.wait_seconds.maximum, 30);
   assert(byName.grok_status.inputSchema.properties.after_revision);
   assert.equal(byName.grok_status.inputSchema.properties.wait_seconds.maximum, 30);
   for (const name of ["grok_capabilities", "grok_session_configure", "grok_plan_decide", "grok_command", "grok_config_get", "grok_config_set"]) {
@@ -164,6 +168,9 @@ test("Grok sessions normalize ACP model controls and hold plan exit requests", a
   agent.handleAgentRequest({ id: 99, method: "x.ai/exit_plan_mode", params: { planContent: "Approved-looking plan" } });
   assert.equal(agent.status, "awaiting_plan_approval");
   assert.equal(agent.planApproval.plan_content, "Approved-looking plan");
+  const approvalProgress = progressSnapshot(agent, agent.revision - 1);
+  assert.equal(approvalProgress.action_required, "plan_approval");
+  assert.equal(approvalProgress.pending_plan_approval.plan_content, "Approved-looking plan");
   agent.close();
 });
 
@@ -198,6 +205,10 @@ test("visible progress has revisions, bounded previews, and waitable updates", a
   const first = agent.summary(false);
   assert(first.revision > 0);
   assert.equal(first.public_response_preview, "Public progress");
+  const compact = progressSnapshot(agent, 0);
+  assert.equal(compact.changed, true);
+  assert.equal(compact.public_response_preview, "Public progress");
+  assert.equal(compact.response_chars, "Public progress".length);
 
   agent.consumeUpdate({ sessionUpdate: "agent_thought_chunk", content: { text: "private" } });
   assert.equal(agent.revision, first.revision);
@@ -211,6 +222,10 @@ test("visible progress has revisions, bounded previews, and waitable updates", a
   assert.equal(second.recent_tools.at(-1).title, "Inspect files");
   assert.equal(second.recent_tools.at(-1).revision, second.revision);
   assert(second.recent_tools.at(-1).at);
+  const delta = progressSnapshot(agent, first.revision);
+  assert.equal(delta.recent_tools.length, 1);
+  assert.equal(delta.recent_tools[0].title, "Inspect files");
+  assert.equal(delta.action_required, null);
 });
 
 test("linked worktree guard accepts a symlinked root and rejects a primary checkout", () => {

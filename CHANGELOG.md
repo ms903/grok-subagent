@@ -2,6 +2,24 @@
 
 All notable changes to this project will be documented here.
 
+## 0.6.0 - 2026-08-16
+
+### Added
+
+- Added `grok_progress`, a compact revision-based long-poll endpoint for public lifecycle, Plan, tool, preview, and action-required updates.
+- Added a native Codex monitor workflow: Luna/low handles routine Grok waiting and progress relay, while Terra/medium is reserved for complex plan interpretation, steering, or multi-result synthesis.
+- Added deterministic and authenticated E2E coverage for the compact progress protocol.
+
+### Changed
+
+- Long Grok tasks now prefer a native Codex monitor so the main agent remains responsive; direct polling remains the compatibility fallback.
+- Plan approval and every write-scope decision remain owned by the main Codex agent and user.
+
+### Security
+
+- Progress snapshots remain bounded to public response text, Plan content, tool metadata, lifecycle state, and sanitized errors; private thought chunks are never forwarded.
+- Native monitor agents cannot expand write scope, approve Plans, enable nested Grok subagents, or publish changes on their own.
+
 ## 0.5.0 - 2026-08-14
 
 ### Added

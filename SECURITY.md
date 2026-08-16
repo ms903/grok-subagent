@@ -53,6 +53,12 @@ An advertised Grok command is not automatically authorized. `grok_command` also 
 
 Nested Grok subagents are disabled by default. Enabling them requires both `subagents_enabled: true` and `confirm_subagents: true`; nested work still inherits the parent Grok sandbox and does not expand Codex authorization.
 
+## Native monitor boundary
+
+A Codex-native Luna/Terra monitor is an orchestration worker, not a new authorization principal. It receives only the task scope the main Codex agent delegates and cannot broaden filesystem writes, enable nested Grok subagents, approve a Grok Plan, commit, merge, push, publish, or perform another external side effect without the authorization already required by the main workflow. Plan approval is always surfaced to the main Codex agent and user.
+
+Progress reporting is intentionally public and bounded. `grok_progress` can expose lifecycle state, elapsed time, selected controls, public Plan content, tool titles/status, a short public-answer preview, and sanitized errors. The bridge discards Grok thought chunks; the monitor must not infer or fabricate hidden reasoning. If native Codex collaboration is unavailable, direct polling has the same data boundary.
+
 ## Dependency and process model
 
 The MCP server uses only Node.js standard-library modules. Grok is launched with argument arrays rather than shell command interpolation. All child processes are terminated when the bridge shuts down, with a forced-kill fallback.

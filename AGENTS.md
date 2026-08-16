@@ -36,14 +36,16 @@ python3 plugins/grok-subagent/scripts/run_search.py run --platform x --depth qui
 - 写入模式只允许 linked Git worktree（`.git` 为文件），禁止主检出
 - 写入 Plan 必须先用独立只读进程规划，批准后才重启为 workspace 进程
 - Grok 子 Agent 默认关闭；启用必须同时传 `subagents_enabled` 和 `confirm_subagents`
+- 长 Grok 任务默认由原生 `gpt-5.6-luna`（low）监控；复杂计划解释/引导/综合才使用 `gpt-5.6-terra`（medium）
+- 监控者用 `grok_progress` 传递公开增量与 60 秒心跳；Plan 审批和写入范围只能回到主 Codex/用户
 - 插件配置只写 `${XDG_CONFIG_HOME:-~/.config}/grok-subagent/config.json`，禁止改写 Grok 原生 config
 - 搜索模式禁止进入当前仓库 cwd；结果缓存在 `~/.cache/grok-subagent/search-runs`
 - 不要提交 `~/.grok/auth.json`、token、私有 prompt 或含真实密钥的测试仓
 
 ## 当前状态与下一步
 
-- 现役开发版本：`0.5.0`，控制面包含模型、推理深度、Agent/Plan、profile、子 Agent、配置和安全 `/xxxx`
+- 现役开发版本：`0.6.0`，控制面包含模型、推理深度、Agent/Plan、profile、子 Agent、配置、安全 `/xxxx` 和原生监控进度
 - marketplace：`ms903-grok`；插件名：`grok-subagent`
-- 本地插件缓存安装后位于 `~/.codex/plugins/cache/ms903-grok/grok-subagent/0.5.0`
+- 本地插件缓存安装后位于 `~/.codex/plugins/cache/ms903-grok/grok-subagent/0.6.0`
 - 此 fork 上游为 `Walvez/grok-subagent`；不要改写或压平原始历史
 - 新任务中优先：项目审查用 `grok_spawn_readonly`；X/Reddit/实时公开研究用 `grok_search`

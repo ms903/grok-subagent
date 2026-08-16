@@ -1,7 +1,7 @@
 interface:
   display_name: "Grok Subagent"
-  short_description: "Control Grok models, modes, plans, agents, and search"
-  default_prompt: "Use $grok-subagent to run Grok with explicit model, effort, Agent/Plan, profile, and safety controls, then verify its result."
+  short_description: "Run Grok through responsive Luna or Terra monitors"
+  default_prompt: "Use $grok-subagent with a native GPT-5.6 Luna monitor to run Grok, relay compact public progress, preserve Plan approvals for me, and verify the result."
 dependencies:
   tools:
     - type: "mcp"

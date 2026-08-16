@@ -8,6 +8,7 @@ The bridge is intentionally an orchestrator adapter, not another coding-agent fr
 
 ```text
 Codex task
+  -> native Codex Luna/Terra monitor (long task; optional)
   -> bundled grok-subagent skill
   -> MCP JSON-RPC over stdio
   -> mcp-server/server.mjs
@@ -34,12 +35,25 @@ The MCP server has no third-party runtime dependencies. Each external agent owns
 4. Create a session with `session/new`, the target directory, no nested MCP servers, and additional orchestration rules.
 5. Send the task with `session/prompt`.
 6. Consume `session/update` events. Keep public message chunks, plan entries, and bounded tool metadata; discard thought chunks.
-7. Let `grok_status` long-poll a newer progress revision for up to 30 seconds so the orchestration skill can relay visible progress without tight polling.
+7. Let `grok_progress` long-poll a compact, public progress delta for up to 30 seconds. Keep `grok_status` as the fuller diagnostic view.
 8. Read the session's advertised models, reasoning efforts, modes, and slash commands. `session/set_model` and `session/set_mode` provide between-turn control without replacing the Codex harness.
 9. Hold Grok's Plan exit request for a Codex/user decision instead of approving it automatically.
 10. Keep the process alive for focused follow-ups until cancellation, close, or MCP shutdown.
 
 The child process receives only a small system environment allowlist, supported Grok authentication variables, and variables explicitly named by the operator. Failed or timed-out sessions terminate their Grok process while retaining a bounded diagnostic summary.
+
+## Native Codex monitor layer
+
+The MCP server cannot create Codex-native subagents. Native monitoring is deliberately a skill-level orchestration policy:
+
+1. For a long Grok task, the main Codex agent creates one bounded native monitor and gives it the absolute scope, Grok controls, safety boundary, and expected output.
+2. `gpt-5.6-luna` with low reasoning handles routine start/wait/progress/result transport. `gpt-5.6-terra` with medium reasoning is reserved for complex plan interpretation, substantive steering, or multi-result synthesis.
+3. The monitor starts exactly one Grok task, reports the agent ID immediately, and advances a `revision` cursor with `grok_progress`.
+4. Material public changes and a maximum-60-second heartbeat travel through the native subagent mailbox, leaving the main Codex agent free to work or answer the user.
+5. A Plan approval request returns to the main agent and user. The monitor never approves a plan or expands write scope.
+6. If native collaboration or the requested native model is unavailable, the main agent uses the same `grok_progress` loop directly.
+
+`grok_progress` returns lifecycle state, phase, elapsed time, selected controls, an action-required flag, bounded Plan content when approval is pending, at most five tool-event deltas, response length, a bounded public-answer preview, and sanitized errors. It never returns Grok thought chunks. Synchronous isolated search has no internal event stream, so a native monitor can only report search startup, heartbeat, and completion.
 
 ## Isolated search mode
 
@@ -117,5 +131,6 @@ This is defense in depth, not a claim of perfect isolation. See [SECURITY.md](SE
 - 20 recent tool events;
 - 30-minute maximum prompt timeout;
 - 30-second maximum blocking result wait.
+- 30-second maximum `grok_progress` long poll with at most five tool-event deltas per response.
 
 Closing the MCP server terminates all child Grok processes.

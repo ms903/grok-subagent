@@ -1,7 +1,7 @@
 {
   "name": "grok-subagent",
-  "version": "0.5.0",
-  "description": "Run and control authenticated Grok Build agents and isolated Grok-native X/web search from Codex.",
+  "version": "0.6.0",
+  "description": "Run and control authenticated Grok Build agents through responsive native Codex monitors, plus isolated Grok-native X/web search.",
   "author": {
     "name": "ms903",
     "url": "https://github.com/ms903"
@@ -21,8 +21,8 @@
   "skills": "./skills/",
   "interface": {
     "displayName": "Grok Subagent",
-    "shortDescription": "Control Grok models, modes, plans, agents, and search.",
-    "longDescription": "Let Codex start, configure, steer, approve plans, inspect, cancel, and close authenticated Grok Build ACP sessions, and run isolated Grok-native X/Reddit/web research outside the current repository.",
+    "shortDescription": "Control Grok through responsive Codex monitor agents.",
+    "longDescription": "Let Codex delegate long Grok waits to native GPT-5.6 Luna or Terra monitor agents while exposing compact public progress, and start, configure, steer, approve plans, inspect, cancel, and close authenticated Grok Build ACP sessions.",
     "developerName": "ms903",
     "category": "Productivity",
     "capabilities": [
@@ -31,7 +31,7 @@
       "Write"
     ],
     "defaultPrompt": [
-      "Ask Grok 4.6 at high effort to review this project.",
+      "Ask a Luna monitor to run Grok 4.6 at high effort and relay progress.",
       "Search recent X posts about this topic with Grok.",
       "Have Grok plan, then implement in an isolated worktree."
     ]
